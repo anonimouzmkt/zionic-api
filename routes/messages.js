@@ -29,17 +29,21 @@ function extractPhoneNumber(number) {
 // ✅ HELPER: Encontrar empresa pela API Key
 async function findCompanyByApiKey(apiKey, supabase) {
   try {
-    // Buscar empresa pelas configurações de API keys
-    const { data: companies, error } = await supabase
-      .from('companies')
-      .select('id, name, settings')
-      .neq('settings', null);
+    // ✅ CORRIGIDO: Buscar API keys em company_settings.api_integrations
+    const { data: companySettings, error } = await supabase
+      .from('company_settings')
+      .select(`
+        company_id,
+        api_integrations,
+        companies!inner(id, name)
+      `)
+      .not('api_integrations', 'is', null);
 
     if (error) throw error;
 
-    for (const company of companies || []) {
-      if (company.settings?.api_keys) {
-        const validKey = company.settings.api_keys.find(
+    for (const setting of companySettings || []) {
+      if (setting.api_integrations?.api_keys) {
+        const validKey = setting.api_integrations.api_keys.find(
           key => key.key === apiKey && key.enabled === true
         );
         
@@ -47,8 +51,8 @@ async function findCompanyByApiKey(apiKey, supabase) {
           return {
             success: true,
             company: {
-              id: company.id,
-              name: company.name
+              id: setting.company_id,
+              name: setting.companies.name
             },
             apiKeyData: validKey
           };
