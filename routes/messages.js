@@ -247,21 +247,42 @@ async function findOrCreateConversation(companyId, contactId, integrationId, ext
 }
 
 // ✅ HELPER: Encontrar instância WhatsApp da empresa
-async function findWhatsappInstance(companyId, supabase) {
+async function findWhatsappInstance(companyId, supabase, instanceId = null, instanceName = null) {
   try {
-    // Buscar instância WhatsApp ativa da empresa
-    const { data: instance, error } = await supabase
+    let query = supabase
       .from('whatsapp_instances')
       .select('id, name, phone_number, api_url, api_key')
       .eq('company_id', companyId)
-      .eq('status', 'connected')
-      .limit(1)
-      .single();
+      .eq('status', 'connected');
+
+    // Se especificou instance_id, buscar por ID específico
+    if (instanceId) {
+      query = query.eq('id', instanceId);
+    }
+    // Se especificou instance_name, buscar por nome específico
+    else if (instanceName) {
+      query = query.eq('name', instanceName);
+    }
+    // Se não especificou nada, pegar a primeira disponível
+    else {
+      query = query.limit(1);
+    }
+
+    const { data: instance, error } = await query.single();
 
     if (error || !instance) {
+      let errorMsg = 'Nenhuma instância WhatsApp conectada encontrada';
+      if (instanceId) {
+        errorMsg = `Instância com ID '${instanceId}' não encontrada ou desconectada`;
+      } else if (instanceName) {
+        errorMsg = `Instância '${instanceName}' não encontrada ou desconectada`;
+      } else {
+        errorMsg += ' para esta empresa';
+      }
+      
       return {
         success: false,
-        error: 'Nenhuma instância WhatsApp conectada encontrada para esta empresa'
+        error: errorMsg
       };
     }
 
@@ -336,7 +357,7 @@ async function saveMessageToDatabase(conversationId, direction, messageType, con
 // ✅ FUNÇÃO PRINCIPAL: Enviar mensagem de texto
 router.post('/send', async (req, res) => {
   try {
-    const { number, message } = req.body;
+    const { number, message, instance_id, instance_name } = req.body;
     const companyId = req.company.id;
     const apiKeyData = req.apiKey;
 
@@ -347,7 +368,9 @@ router.post('/send', async (req, res) => {
         error: 'Parâmetros obrigatórios: number, message',
         example: {
           number: "5511999999999",
-          message: "Sua mensagem aqui"
+          message: "Sua mensagem aqui",
+          instance_id: "uuid-da-instancia (opcional)",
+          instance_name: "nome-da-instancia (opcional)"
         }
       });
     }
@@ -372,11 +395,14 @@ router.post('/send', async (req, res) => {
     });
 
     // 1. Encontrar instância WhatsApp da empresa
-    const instanceResult = await findWhatsappInstance(companyId, req.supabase);
+    const instanceResult = await findWhatsappInstance(companyId, req.supabase, instance_id, instance_name);
     if (!instanceResult.success) {
       return res.status(404).json({
         success: false,
-        error: instanceResult.error
+        error: instanceResult.error,
+        hint: instance_id || instance_name ? 
+          "Verifique se a instância especificada existe e está conectada" : 
+          "Certifique-se de ter pelo menos uma instância WhatsApp conectada"
       });
     }
 
@@ -499,7 +525,7 @@ router.post('/send', async (req, res) => {
 // ✅ FUNÇÃO PRINCIPAL: Enviar mídia
 router.post('/send-media', upload.single('file'), async (req, res) => {
   try {
-    const { number, caption } = req.body;
+    const { number, caption, instance_id, instance_name } = req.body;
     const file = req.file;
     const companyId = req.company.id;
     const apiKeyData = req.apiKey;
@@ -512,7 +538,9 @@ router.post('/send-media', upload.single('file'), async (req, res) => {
         example: {
           number: "5511999999999",
           file: "arquivo via FormData",
-          caption: "Legenda opcional"
+          caption: "Legenda opcional",
+          instance_id: "uuid-da-instancia (opcional)",
+          instance_name: "nome-da-instancia (opcional)"
         }
       });
     }
@@ -533,11 +561,14 @@ router.post('/send-media', upload.single('file'), async (req, res) => {
     });
 
     // 1. Encontrar instância WhatsApp
-    const instanceResult = await findWhatsappInstance(companyId, req.supabase);
+    const instanceResult = await findWhatsappInstance(companyId, req.supabase, instance_id, instance_name);
     if (!instanceResult.success) {
       return res.status(404).json({
         success: false,
-        error: instanceResult.error
+        error: instanceResult.error,
+        hint: instance_id || instance_name ? 
+          "Verifique se a instância especificada existe e está conectada" : 
+          "Certifique-se de ter pelo menos uma instância WhatsApp conectada"
       });
     }
 
@@ -701,7 +732,7 @@ router.post('/send-media', upload.single('file'), async (req, res) => {
 // ✅ FUNÇÃO PRINCIPAL: Responder mensagem
 router.post('/reply', async (req, res) => {
   try {
-    const { number, message, quotedMessageId } = req.body;
+    const { number, message, quotedMessageId, instance_id, instance_name } = req.body;
     const companyId = req.company.id;
 
     // Validações
@@ -712,7 +743,9 @@ router.post('/reply', async (req, res) => {
         example: {
           number: "5511999999999",
           message: "Sua resposta aqui",
-          quotedMessageId: "uuid-da-mensagem-original"
+          quotedMessageId: "uuid-da-mensagem-original",
+          instance_id: "uuid-da-instancia (opcional - usa conversa se omitido)",
+          instance_name: "nome-da-instancia (opcional - usa conversa se omitido)"
         }
       });
     }
@@ -734,27 +767,48 @@ router.post('/reply', async (req, res) => {
       });
     }
 
-    // 2. Buscar dados da conversa
-    const { data: conversation, error: convError } = await req.supabase
-      .from('conversations')
-      .select(`
-        id,
-        company_id,
-        whatsapp_instance_id,
-        whatsapp_instances!inner(name, api_url, api_key)
-      `)
-      .eq('id', quotedMessage.conversation_id)
-      .eq('company_id', companyId)
-      .single();
+    // 2. Se especificou instância específica, usar ela; senão, usar da conversa
+    let instance;
+    
+    if (instance_id || instance_name) {
+      // Usar instância especificada
+      const instanceResult = await findWhatsappInstance(companyId, req.supabase, instance_id, instance_name);
+      if (!instanceResult.success) {
+        return res.status(404).json({
+          success: false,
+          error: instanceResult.error,
+          hint: "Verifique se a instância especificada existe e está conectada"
+        });
+      }
+      instance = {
+        name: instanceResult.instance.name,
+        api_url: instanceResult.instance.api_url,
+        api_key: instanceResult.instance.api_key
+      };
+    } else {
+      // Usar instância da conversa original (comportamento padrão)
+      const { data: conversation, error: convError } = await req.supabase
+        .from('conversations')
+        .select(`
+          id,
+          company_id,
+          whatsapp_instance_id,
+          whatsapp_instances!inner(name, api_url, api_key)
+        `)
+        .eq('id', quotedMessage.conversation_id)
+        .eq('company_id', companyId)
+        .single();
 
-    if (convError || !conversation) {
-      return res.status(404).json({
-        success: false,
-        error: 'Conversa não encontrada'
-      });
+      if (convError || !conversation) {
+        return res.status(404).json({
+          success: false,
+          error: 'Conversa não encontrada'
+        });
+      }
+
+      instance = conversation.whatsapp_instances;
     }
 
-    const instance = conversation.whatsapp_instances;
     const apiUrl = instance.api_url || 'https://evowise.anonimouz.com';
     const apiKey = instance.api_key || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W';
 
