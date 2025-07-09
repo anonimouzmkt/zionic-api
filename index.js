@@ -141,6 +141,16 @@ app.get('/', (req, res) => {
   });
 });
 
+// Rota de health check
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    message: 'API funcionando normalmente',
+    timestamp: new Date().toISOString(),
+    version: '3.0'
+  });
+});
+
 // Rota para testar autenticação
 app.get('/api/auth/test', authenticateApiKey, (req, res) => {
   res.json({ 
