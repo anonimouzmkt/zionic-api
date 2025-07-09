@@ -8,6 +8,7 @@ API REST para envio de mensagens via WhatsApp e Instagram com autenticação por
 - ✅ **Mensagens de texto** - Envio simples e rápido
 - ✅ **Envio de mídia** - Imagens, vídeos, áudios e documentos
 - ✅ **Respostas citadas** - Reply de mensagens específicas
+- ✅ **Seleção de instâncias** - Escolha qual WhatsApp usar (multi-instância)
 - ✅ **Monitoramento** - Controle de uso das API Keys
 - ✅ **Multi-empresa** - Cada empresa tem suas próprias keys
 
@@ -28,6 +29,46 @@ Inclua o header em todas as requisições:
 Authorization: Bearer zio_sua_api_key_aqui
 ```
 
+## 🎯 Seleção de Instâncias WhatsApp
+
+### **Empresa com UMA instância:**
+Você não precisa especificar nada - a API usa automaticamente a única instância ativa.
+
+### **Empresa com MÚLTIPLAS instâncias:**
+Você pode escolher qual instância usar de 3 formas:
+
+#### **1️⃣ Por ID (mais preciso):**
+```json
+{
+  "number": "5511999999999",
+  "message": "Olá!",
+  "instance_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+#### **2️⃣ Por nome (mais fácil):**
+```json
+{
+  "number": "5511999999999", 
+  "message": "Olá!",
+  "instance_name": "vendas-sp"
+}
+```
+
+#### **3️⃣ Automática (padrão):**
+```json
+{
+  "number": "5511999999999",
+  "message": "Olá!"
+}
+```
+Se você não especificar, a API usa a primeira instância ativa encontrada.
+
+> **💡 Casos de uso:**
+> - **Sistema de vendas**: Use `instance_name: "vendas"`
+> - **Suporte técnico**: Use `instance_name: "suporte"`  
+> - **WhatsApp regional**: Use `instance_name: "filial-sp"`
+
 ## 📡 Endpoints
 
 ### 🧪 Teste de conexão (público)
@@ -47,7 +88,9 @@ POST /api/messages/send
 ```json
 {
   "number": "5511999999999",
-  "message": "Sua mensagem aqui"
+  "message": "Sua mensagem aqui",
+  "instance_id": "uuid-da-instancia (opcional)",
+  "instance_name": "nome-da-instancia (opcional)"
 }
 ```
 
@@ -56,9 +99,11 @@ POST /api/messages/send
 POST /api/messages/send-media
 ```
 Form-data:
-- `number`: Número do destinatário
-- `file`: Arquivo para enviar
+- `number`: Número do destinatário *(obrigatório)*
+- `file`: Arquivo para enviar *(obrigatório)*
 - `caption`: Legenda (opcional)
+- `instance_id`: UUID da instância WhatsApp (opcional)
+- `instance_name`: Nome da instância WhatsApp (opcional)
 
 ### 💬 Responder mensagem
 ```
@@ -68,7 +113,9 @@ POST /api/messages/reply
 {
   "number": "5511999999999",
   "message": "Sua resposta aqui",
-  "quotedMessageId": "message_id_original"
+  "quotedMessageId": "uuid-da-mensagem-original",
+  "instance_id": "uuid-da-instancia (opcional)",
+  "instance_name": "nome-da-instancia (opcional)"
 }
 ```
 
@@ -84,7 +131,8 @@ const response = await fetch('https://zionic-api.onrender.com/api/messages/send'
   },
   body: JSON.stringify({
     number: '5511999999999',
-    message: 'Olá da API!'
+    message: 'Olá da API!',
+    instance_name: 'vendas-sp' // Opcional: especificar instância
   })
 });
 
@@ -103,7 +151,8 @@ headers = {
 }
 data = {
     "number": "5511999999999",
-    "message": "Olá da API!"
+    "message": "Olá da API!",
+    "instance_name": "vendas-sp"  # Opcional: especificar instância
 }
 
 response = requests.post(url, headers=headers, json=data)
@@ -112,10 +161,17 @@ print(response.json())
 
 ### cURL
 ```bash
+# Envio simples (usa primeira instância ativa)
 curl -X POST https://zionic-api.onrender.com/api/messages/send \
   -H "Authorization: Bearer zio_sua_api_key" \
   -H "Content-Type: application/json" \
   -d '{"number":"5511999999999","message":"Olá da API!"}'
+
+# Especificando instância por nome
+curl -X POST https://zionic-api.onrender.com/api/messages/send \
+  -H "Authorization: Bearer zio_sua_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{"number":"5511999999999","message":"Olá!","instance_name":"vendas-sp"}'
 ```
 
 ## 🛠️ Desenvolvimento local
@@ -192,8 +248,18 @@ Adicione no Render:
 |--------|-----------|
 | `401` | API Key inválida ou ausente |
 | `400` | Dados de entrada inválidos |
+| `404` | Instância WhatsApp não encontrada ou desconectada |
 | `500` | Erro interno do servidor |
 | `503` | Evolution API indisponível |
+
+### **Erros específicos de instância:**
+```json
+{
+  "success": false,
+  "error": "Instância 'vendas-sp' não encontrada ou desconectada",
+  "hint": "Verifique se a instância especificada existe e está conectada"
+}
+```
 
 ## 🔒 Segurança
 
