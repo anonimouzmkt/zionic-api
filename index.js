@@ -44,14 +44,18 @@ const authenticateApiKey = async (req, res, next) => {
       });
     }
 
-    // Buscar a company que possui esta API key
-    const { data: companies, error } = await supabase
-      .from('companies')
-      .select('id, name, settings')
-      .neq('settings', null);
+    // ✅ CORRIGIDO: Buscar API keys em company_settings.api_integrations
+    const { data: companySettings, error } = await supabase
+      .from('company_settings')
+      .select(`
+        company_id,
+        api_integrations,
+        companies!inner(id, name)
+      `)
+      .not('api_integrations', 'is', null);
 
     if (error) {
-      console.error('Erro ao buscar companies:', error);
+      console.error('Erro ao buscar company_settings:', error);
       return res.status(500).json({
         error: 'Erro interno do servidor'
       });
@@ -59,17 +63,19 @@ const authenticateApiKey = async (req, res, next) => {
 
     let validApiKey = null;
     let companyId = null;
+    let companyName = null;
 
-    // Procurar a API key nas configurações das companies
-    for (const company of companies) {
-      if (company.settings && company.settings.api_keys) {
-        const apiKeyData = company.settings.api_keys.find(
+    // ✅ CORRIGIDO: Procurar a API key nas configurações corretas
+    for (const setting of companySettings) {
+      if (setting.api_integrations && setting.api_integrations.api_keys) {
+        const apiKeyData = setting.api_integrations.api_keys.find(
           key => key.key === apiKey && key.enabled === true
         );
         
         if (apiKeyData) {
           validApiKey = apiKeyData;
-          companyId = company.id;
+          companyId = setting.company_id;
+          companyName = setting.companies.name;
           break;
         }
       }
@@ -82,29 +88,29 @@ const authenticateApiKey = async (req, res, next) => {
       });
     }
 
-    // Atualizar last_used_at
-    const updatedApiKeys = companies
-      .find(c => c.id === companyId)
-      .settings.api_keys.map(key => 
+    // ✅ CORRIGIDO: Atualizar last_used_at no local correto
+    const updatedApiKeys = companySettings
+      .find(cs => cs.company_id === companyId)
+      .api_integrations.api_keys.map(key => 
         key.key === apiKey 
           ? { ...key, last_used_at: new Date().toISOString() }
           : key
       );
 
-    const updatedSettings = {
-      ...companies.find(c => c.id === companyId).settings,
+    const updatedApiIntegrations = {
+      ...companySettings.find(cs => cs.company_id === companyId).api_integrations,
       api_keys: updatedApiKeys
     };
 
     await supabase
-      .from('companies')
-      .update({ settings: updatedSettings })
-      .eq('id', companyId);
+      .from('company_settings')
+      .update({ api_integrations: updatedApiIntegrations })
+      .eq('company_id', companyId);
 
     // Adicionar informações da empresa na requisição
     req.company = {
       id: companyId,
-      name: companies.find(c => c.id === companyId).name
+      name: companyName
     };
     req.apiKey = validApiKey;
 
@@ -120,10 +126,19 @@ const authenticateApiKey = async (req, res, next) => {
 
 // Importar rotas
 const messageRoutes = require('./routes/messages');
+const conversationRoutes = require('./routes/conversation');
 
 // Rota de teste
 app.get('/', (req, res) => {
-  res.json({ message: 'API Zionic funcionando!' });
+  res.json({ 
+    message: 'API Zionic funcionando!',
+    version: '3.0',
+    endpoints: {
+      messages: '/api/messages',
+      conversation: '/api/conversation',
+      auth_test: '/api/auth/test'
+    }
+  });
 });
 
 // Rota para testar autenticação
@@ -141,6 +156,7 @@ app.get('/api/auth/test', authenticateApiKey, (req, res) => {
 
 // Usar rotas (com autenticação)
 app.use('/api/messages', authenticateApiKey, messageRoutes);
+app.use('/api/conversation', authenticateApiKey, conversationRoutes);
 
 app.listen(port, () => {
   console.log(`🚀 API rodando na porta ${port}`);
