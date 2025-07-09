@@ -26,6 +26,92 @@ function extractPhoneNumber(number) {
   return cleanNumber;
 }
 
+// ✅ NOVO: HELPER para buscar dados completos da conversa
+async function getConversationData(conversationId, companyId, supabase) {
+  try {
+    // Buscar conversa com dados relacionados
+    const { data: conversation, error: convError } = await supabase
+      .from('conversations')
+      .select(`
+        id, company_id, contact_id, external_id, title, status,
+        whatsapp_instance_id,
+        contacts!inner(
+          id, first_name, last_name, full_name, phone, email, company_name
+        ),
+        whatsapp_instances!inner(
+          id, name, phone_number, api_url, api_key, status
+        )
+      `)
+      .eq('id', conversationId)
+      .eq('company_id', companyId)
+      .single();
+
+    if (convError || !conversation) {
+      return {
+        success: false,
+        error: 'Conversa não encontrada ou sem acesso',
+        details: convError?.message
+      };
+    }
+
+    // Verificar se a instância está conectada
+    if (conversation.whatsapp_instances.status !== 'connected') {
+      return {
+        success: false,
+        error: 'Instância WhatsApp desconectada',
+        instanceStatus: conversation.whatsapp_instances.status
+      };
+    }
+
+    // Extrair dados estruturados
+    const contact = conversation.contacts;
+    const instance = conversation.whatsapp_instances;
+    const externalId = conversation.external_id; // número do cliente com @s.whatsapp.net
+    const phoneNumber = extractPhoneNumber(externalId);
+
+    // Configurações da instância (com fallbacks)
+    const apiUrl = instance.api_url || 'https://evowise.anonimouz.com';
+    const apiKey = instance.api_key || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W';
+
+    return {
+      success: true,
+      data: {
+        conversation: {
+          id: conversation.id,
+          company_id: conversation.company_id,
+          contact_id: conversation.contact_id,
+          external_id: conversation.external_id,
+          title: conversation.title,
+          status: conversation.status
+        },
+        contact: {
+          id: contact.id,
+          name: contact.full_name || `${contact.first_name} ${contact.last_name}`.trim(),
+          phone: contact.phone || phoneNumber,
+          email: contact.email,
+          company: contact.company_name,
+          whatsapp_phone: phoneNumber
+        },
+        instance: {
+          id: instance.id,
+          name: instance.name,
+          phone_number: instance.phone_number,
+          api_url: apiUrl,
+          api_key: apiKey,
+          status: instance.status
+        }
+      }
+    };
+
+  } catch (error) {
+    console.error('❌ Erro em getConversationData:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
 // ✅ HELPER: Encontrar empresa pela API Key
 async function findCompanyByApiKey(apiKey, supabase) {
   try {
