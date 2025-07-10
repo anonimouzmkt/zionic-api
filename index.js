@@ -47,11 +47,10 @@ const authenticateApiKey = async (req, res, next) => {
 
     console.log('🔍 Buscando API key:', apiKey.substring(0, 10) + '...');
 
-    // ✅ CORRIGIDO: Buscar API keys em company_settings.api_integrations (SEM JOIN)
+    // ✅ CORRIGIDO: Buscar TODAS as configurações e filtrar no código
     const { data: companySettings, error } = await supabase
       .from('company_settings')
-      .select('company_id, api_integrations')
-      .not('api_integrations', 'is', null);
+      .select('company_id, api_integrations');
 
     if (error) {
       console.error('❌ Erro ao buscar company_settings:', error);
@@ -60,7 +59,7 @@ const authenticateApiKey = async (req, res, next) => {
       });
     }
 
-    console.log(`📊 Encontradas ${companySettings?.length || 0} empresas com API integrations`);
+    console.log(`📊 Total de configurações encontradas: ${companySettings?.length || 0}`);
 
     let validApiKey = null;
     let companyId = null;
@@ -68,7 +67,10 @@ const authenticateApiKey = async (req, res, next) => {
 
     // ✅ CORRIGIDO: Procurar a API key nas configurações corretas
     for (const setting of companySettings) {
+      console.log(`🔍 Verificando empresa ${setting.company_id}, tem api_integrations:`, !!setting.api_integrations);
+      
       if (setting.api_integrations && setting.api_integrations.api_keys) {
+        console.log(`🔑 Empresa ${setting.company_id} tem ${setting.api_integrations.api_keys.length} API keys`);
         const apiKeyData = setting.api_integrations.api_keys.find(
           key => key.key === apiKey && key.enabled === true
         );
