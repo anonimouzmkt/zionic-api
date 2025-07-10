@@ -38,28 +38,29 @@ const authenticateApiKey = async (req, res, next) => {
     const apiKey = authHeader.substring(7); // Remove "Bearer "
     
     if (!apiKey || !apiKey.startsWith('zio_')) {
+      console.log('❌ API Key inválida ou formato incorreto:', apiKey?.substring(0, 10) + '...');
       return res.status(401).json({
         error: 'Formato de API Key inválido',
         message: 'API Key deve começar com "zio_"'
       });
     }
 
-    // ✅ CORRIGIDO: Buscar API keys em company_settings.api_integrations
+    console.log('🔍 Buscando API key:', apiKey.substring(0, 10) + '...');
+
+    // ✅ CORRIGIDO: Buscar API keys em company_settings.api_integrations (SEM JOIN)
     const { data: companySettings, error } = await supabase
       .from('company_settings')
-      .select(`
-        company_id,
-        api_integrations,
-        companies!inner(id, name)
-      `)
+      .select('company_id, api_integrations')
       .not('api_integrations', 'is', null);
 
     if (error) {
-      console.error('Erro ao buscar company_settings:', error);
+      console.error('❌ Erro ao buscar company_settings:', error);
       return res.status(500).json({
         error: 'Erro interno do servidor'
       });
     }
+
+    console.log(`📊 Encontradas ${companySettings?.length || 0} empresas com API integrations`);
 
     let validApiKey = null;
     let companyId = null;
@@ -75,13 +76,24 @@ const authenticateApiKey = async (req, res, next) => {
         if (apiKeyData) {
           validApiKey = apiKeyData;
           companyId = setting.company_id;
-          companyName = setting.companies.name;
+          
+          console.log('✅ API Key encontrada para company:', setting.company_id);
+          
+          // ✅ Buscar nome da empresa separadamente se necessário
+          const { data: companyData } = await supabase
+            .from('companies')
+            .select('name')
+            .eq('id', setting.company_id)
+            .single();
+          
+          companyName = companyData?.name || 'Empresa';
           break;
         }
       }
     }
 
     if (!validApiKey) {
+      console.log('❌ API Key não encontrada ou inativa:', apiKey.substring(0, 10) + '...');
       return res.status(401).json({
         error: 'API Key inválida ou inativa',
         message: 'Verifique se a API Key está correta e ativa'
