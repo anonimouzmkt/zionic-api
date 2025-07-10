@@ -782,7 +782,7 @@ router.post('/mark-read', async (req, res) => {
     }
 
     // 3. Marcar como lida via Evolution API
-    const evolutionResponse = await fetch(`${instance.api_url}/chat/markMessageAsRead/${instance.name}`, {
+    const evolutionResponse = await fetch(`${instance.server_url}/chat/markMessageAsRead/${instance.name}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
