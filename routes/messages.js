@@ -39,7 +39,7 @@ async function getConversationData(conversationId, companyId, supabase) {
           id, first_name, last_name, full_name, phone, email, company_name
         ),
         whatsapp_instances!inner(
-          id, name, phone_number, api_url, api_key, status
+          id, name, phone_number, server_url, api_key, status
         )
       `)
       .eq('id', conversationId)
@@ -70,7 +70,7 @@ async function getConversationData(conversationId, companyId, supabase) {
     const phoneNumber = extractPhoneNumber(externalId);
 
     // Configurações da instância (com fallbacks)
-    const apiUrl = instance.api_url || 'https://evowise.anonimouz.com';
+    const apiUrl = instance.server_url || 'https://evowise.anonimouz.com';
     const apiKey = instance.api_key || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W';
 
     return {
@@ -96,7 +96,7 @@ async function getConversationData(conversationId, companyId, supabase) {
           id: instance.id,
           name: instance.name,
           phone_number: instance.phone_number,
-          api_url: apiUrl,
+          server_url: apiUrl,
           api_key: apiKey,
           status: instance.status
         }
@@ -341,7 +341,7 @@ async function findWhatsappInstance(companyId, supabase, instanceId = null, inst
   try {
     let query = supabase
       .from('whatsapp_instances')
-      .select('id, name, phone_number, api_url, api_key')
+      .select('id, name, phone_number, server_url, api_key')
       .eq('company_id', companyId)
       .eq('status', 'connected');
 
@@ -376,9 +376,9 @@ async function findWhatsappInstance(companyId, supabase, instanceId = null, inst
       };
     }
 
-    // Usar configurações padrão se não definidas
-    const apiUrl = instance.api_url || 'https://evowise.anonimouz.com';
-    const apiKey = instance.api_key || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W';
+    // Usar configurações padrão se não definidas (com fallback para env vars)
+    const apiUrl = instance.server_url || process.env.EVOLUTION_API_URL || 'https://evowise.anonimouz.com';
+    const apiKey = instance.api_key || process.env.EVOLUTION_API_KEY || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W';
 
     return {
       success: true,
@@ -386,7 +386,7 @@ async function findWhatsappInstance(companyId, supabase, instanceId = null, inst
         id: instance.id,
         name: instance.name,
         phone_number: instance.phone_number,
-        api_url: apiUrl,
+        server_url: apiUrl,
         api_key: apiKey
       }
     };
@@ -540,7 +540,7 @@ router.post('/send', async (req, res) => {
     }
 
     // 5. Enviar via Evolution API
-    const evolutionResponse = await fetch(`${instance.api_url}/message/sendText/${instance.name}`, {
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendText/${instance.name}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -724,7 +724,7 @@ router.post('/send-media', upload.single('file'), async (req, res) => {
     let evolutionResponse;
 
     if (mediaType === 'audio') {
-      evolutionResponse = await fetch(`${instance.api_url}/message/${evolutionEndpoint}/${instance.name}`, {
+      evolutionResponse = await fetch(`${instance.server_url}/message/${evolutionEndpoint}/${instance.name}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -736,7 +736,7 @@ router.post('/send-media', upload.single('file'), async (req, res) => {
         })
       });
     } else {
-      evolutionResponse = await fetch(`${instance.api_url}/message/${evolutionEndpoint}/${instance.name}`, {
+      evolutionResponse = await fetch(`${instance.server_url}/message/${evolutionEndpoint}/${instance.name}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -872,7 +872,7 @@ router.post('/reply', async (req, res) => {
       }
       instance = {
         name: instanceResult.instance.name,
-        api_url: instanceResult.instance.api_url,
+        server_url: instanceResult.instance.server_url,
         api_key: instanceResult.instance.api_key
       };
     } else {
@@ -883,7 +883,7 @@ router.post('/reply', async (req, res) => {
           id,
           company_id,
           whatsapp_instance_id,
-          whatsapp_instances!inner(name, api_url, api_key)
+          whatsapp_instances!inner(name, server_url, api_key)
         `)
         .eq('id', quotedMessage.conversation_id)
         .eq('company_id', companyId)
@@ -899,8 +899,8 @@ router.post('/reply', async (req, res) => {
       instance = conversation.whatsapp_instances;
     }
 
-    const apiUrl = instance.api_url || 'https://evowise.anonimouz.com';
-    const apiKey = instance.api_key || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W';
+    const apiUrl = instance.server_url || process.env.EVOLUTION_API_URL || 'https://evowise.anonimouz.com';
+    const apiKey = instance.api_key || process.env.EVOLUTION_API_KEY || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W';
 
     // 3. Enviar resposta via Evolution API
     const evolutionResponse = await fetch(`${apiUrl}/message/sendText/${instance.name}`, {
