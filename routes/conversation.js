@@ -20,20 +20,30 @@ function extractPhoneNumber(externalId) {
   return match ? match[1] : '';
 }
 
-// ✅ HELPER: Buscar dados completos da conversa
+// ✅ HELPER: Fallback para configurações Evolution usando env vars
+function getEvolutionConfigFallback(instanceName = 'default') {
+  return {
+    id: 'env-fallback',
+    name: instanceName,
+    phone_number: '',
+    server_url: process.env.EVOLUTION_API_URL || 'https://evowise.anonimouz.com',
+    api_key: process.env.EVOLUTION_API_KEY || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W',
+    status: 'connected'
+  };
+}
+
+// ✅ HELPER: Buscar dados completos da conversa (USA INSTANCE REAL + ENV VARS)
 async function getConversationData(conversationId, companyId, supabase) {
   try {
-    // Buscar conversa com dados relacionados
+    console.log('🔍 Buscando conversa com instance real + env vars para configuração');
+    
+    // Buscar conversa + contato + instance_id
     const { data: conversation, error: convError } = await supabase
       .from('conversations')
       .select(`
-        id, company_id, contact_id, external_id, title, status,
-        whatsapp_instance_id,
+        id, company_id, contact_id, external_id, title, status, whatsapp_instance_id,
         contacts!inner(
           id, first_name, last_name, full_name, phone, email, company_name
-        ),
-        whatsapp_instances!inner(
-          id, name, phone_number, api_url, api_key, status
         )
       `)
       .eq('id', conversationId)
@@ -48,24 +58,35 @@ async function getConversationData(conversationId, companyId, supabase) {
       };
     }
 
-    // Verificar se a instância está conectada
-    if (conversation.whatsapp_instances.status !== 'connected') {
+    // Buscar dados básicos da instância (só ID e nome)
+    const { data: instance, error: instanceError } = await supabase
+      .from('whatsapp_instances')
+      .select('id, name, phone_number')
+      .eq('id', conversation.whatsapp_instance_id)
+      .single();
+
+    if (instanceError || !instance) {
       return {
         success: false,
-        error: 'Instância WhatsApp desconectada',
-        instanceStatus: conversation.whatsapp_instances.status
+        error: 'Instância WhatsApp não encontrada',
+        details: instanceError?.message
       };
     }
 
     // Extrair dados estruturados
     const contact = conversation.contacts;
-    const instance = conversation.whatsapp_instances;
-    const externalId = conversation.external_id; // número do cliente com @s.whatsapp.net
+    const externalId = conversation.external_id;
     const phoneNumber = extractPhoneNumber(externalId);
 
-    // Configurações da instância (com fallbacks)
-    const apiUrl = instance.api_url || 'https://evowise.anonimouz.com';
-    const apiKey = instance.api_key || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W';
+    // USA ENV VARS para configuração + dados reais da instância
+    const instanceData = {
+      id: instance.id,
+      name: instance.name,
+      phone_number: instance.phone_number || '',
+      server_url: process.env.EVOLUTION_API_URL || 'https://evowise.anonimouz.com',
+      api_key: process.env.EVOLUTION_API_KEY || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W',
+      status: 'connected'
+    };
 
     return {
       success: true,
@@ -86,14 +107,7 @@ async function getConversationData(conversationId, companyId, supabase) {
           company: contact.company_name,
           whatsapp_phone: phoneNumber
         },
-        instance: {
-          id: instance.id,
-          name: instance.name,
-          phone_number: instance.phone_number,
-          api_url: apiUrl,
-          api_key: apiKey,
-          status: instance.status
-        }
+        instance: instanceData
       }
     };
 
@@ -193,7 +207,7 @@ router.post('/send-text', async (req, res) => {
     const { conversation, contact, instance } = conversationResult.data;
 
     // 2. Enviar via Evolution API
-    const evolutionResponse = await fetch(`${instance.api_url}/message/sendText/${instance.name}`, {
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendText/${instance.name}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -296,7 +310,7 @@ router.post('/send-image', async (req, res) => {
     const { conversation, contact, instance } = conversationResult.data;
 
     // 2. Enviar via Evolution API
-    const evolutionResponse = await fetch(`${instance.api_url}/message/sendMedia/${instance.name}`, {
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -415,7 +429,7 @@ router.post('/send-audio', async (req, res) => {
     const audioBase64 = audioBuffer.toString('base64');
 
     // 3. Enviar via Evolution API
-    const evolutionResponse = await fetch(`${instance.api_url}/message/sendWhatsAppAudio/${instance.name}`, {
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendWhatsAppAudio/${instance.name}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -525,7 +539,7 @@ router.post('/send-video', async (req, res) => {
     const { conversation, contact, instance } = conversationResult.data;
 
     // 2. Enviar via Evolution API
-    const evolutionResponse = await fetch(`${instance.api_url}/message/sendMedia/${instance.name}`, {
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -639,7 +653,7 @@ router.post('/send-document', async (req, res) => {
     const { conversation, contact, instance } = conversationResult.data;
 
     // 2. Enviar via Evolution API
-    const evolutionResponse = await fetch(`${instance.api_url}/message/sendMedia/${instance.name}`, {
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -861,6 +875,532 @@ router.get('/:conversation_id', async (req, res) => {
 
   } catch (error) {
     console.error('❌ [CONVERSATION] Erro ao buscar dados:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Upload e envio de imagem direto via conversation_id
+router.post('/upload-image', upload.single('image'), async (req, res) => {
+  try {
+    const { conversation_id, caption, delay = 1200 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id e arquivo de imagem',
+        example: 'Use multipart/form-data com campo "image" e conversation_id no body'
+      });
+    }
+
+    console.log(`📸 [CONVERSATION] Upload de imagem:`, {
+      company: req.company.name,
+      conversationId: conversation_id,
+      filename: req.file.originalname,
+      size: `${Math.round(req.file.size / 1024)} KB`
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Upload para Supabase Storage
+    const fileName = `conversation_${conversation_id}_${Date.now()}_${req.file.originalname}`;
+    const filePath = `conversation-media/${companyId}/${fileName}`;
+
+    const { data: uploadData, error: uploadError } = await req.supabase.storage
+      .from('media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadError) {
+      throw new Error(`Erro no upload: ${uploadError.message}`);
+    }
+
+    // 3. Obter URL pública
+    const { data: { publicUrl } } = req.supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+
+    // 4. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: publicUrl,
+        caption: caption || '',
+        options: {
+          delay: delay,
+          presence: 'composing'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar imagem');
+    }
+
+    // 5. Preparar dados do attachment
+    const attachmentData = {
+      name: req.file.originalname,
+      url: publicUrl,
+      type: 'image',
+      mimetype: req.file.mimetype,
+      size: `${Math.round(req.file.size / 1024)} KB`,
+      caption: caption || null
+    };
+
+    // 6. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'image',
+      caption || 'Imagem enviada',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase
+    );
+
+    console.log(`✅ [CONVERSATION] Imagem enviada via upload:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: req.file.originalname,
+      storageUrl: publicUrl
+    });
+
+    res.json({
+      success: true,
+      message: 'Imagem enviada com sucesso via upload',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: req.file.originalname,
+        fileSize: attachmentData.size,
+        storageUrl: publicUrl,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'image'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no upload de imagem:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Upload e envio de áudio direto via conversation_id
+router.post('/upload-audio', upload.single('audio'), async (req, res) => {
+  try {
+    const { conversation_id, delay = 1500 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id e arquivo de áudio',
+        example: 'Use multipart/form-data com campo "audio" e conversation_id no body'
+      });
+    }
+
+    console.log(`🎵 [CONVERSATION] Upload de áudio:`, {
+      conversationId: conversation_id,
+      filename: req.file.originalname,
+      size: `${Math.round(req.file.size / 1024)} KB`
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Converter arquivo para base64
+    const audioBase64 = req.file.buffer.toString('base64');
+
+    // 3. Enviar via Evolution API (como áudio do WhatsApp)
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendWhatsAppAudio/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        audiobase64: audioBase64,
+        options: {
+          delay: delay,
+          presence: 'recording'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar áudio');
+    }
+
+    // 4. Preparar dados do attachment (salvar no storage para histórico)
+    const fileName = `conversation_${conversation_id}_${Date.now()}_${req.file.originalname}`;
+    const filePath = `conversation-media/${companyId}/${fileName}`;
+
+    const { data: uploadData } = await req.supabase.storage
+      .from('media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600'
+      });
+
+    const { data: { publicUrl } } = req.supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+
+    const attachmentData = {
+      name: req.file.originalname,
+      url: publicUrl,
+      type: 'audio',
+      mimetype: req.file.mimetype,
+      size: `${Math.round(req.file.size / 1024)} KB`
+    };
+
+    // 5. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'audio',
+      'Áudio enviado',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase
+    );
+
+    console.log(`✅ [CONVERSATION] Áudio enviado via upload:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: req.file.originalname
+    });
+
+    res.json({
+      success: true,
+      message: 'Áudio enviado com sucesso via upload',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: req.file.originalname,
+        fileSize: attachmentData.size,
+        storageUrl: publicUrl,
+        sentAt: new Date().toISOString(),
+        type: 'audio'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no upload de áudio:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Upload e envio de vídeo direto via conversation_id
+router.post('/upload-video', upload.single('video'), async (req, res) => {
+  try {
+    const { conversation_id, caption, delay = 2000 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id e arquivo de vídeo',
+        example: 'Use multipart/form-data com campo "video" e conversation_id no body'
+      });
+    }
+
+    console.log(`🎬 [CONVERSATION] Upload de vídeo:`, {
+      conversationId: conversation_id,
+      filename: req.file.originalname,
+      size: `${Math.round(req.file.size / 1024 / 1024)} MB`
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Upload para Supabase Storage
+    const fileName = `conversation_${conversation_id}_${Date.now()}_${req.file.originalname}`;
+    const filePath = `conversation-media/${companyId}/${fileName}`;
+
+    const { data: uploadData, error: uploadError } = await req.supabase.storage
+      .from('media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadError) {
+      throw new Error(`Erro no upload: ${uploadError.message}`);
+    }
+
+    // 3. Obter URL pública
+    const { data: { publicUrl } } = req.supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+
+    // 4. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: publicUrl,
+        caption: caption || '',
+        mediatype: 'video',
+        options: {
+          delay: delay,
+          presence: 'recording'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar vídeo');
+    }
+
+    // 5. Preparar dados do attachment
+    const attachmentData = {
+      name: req.file.originalname,
+      url: publicUrl,
+      type: 'video',
+      mimetype: req.file.mimetype,
+      size: `${Math.round(req.file.size / 1024 / 1024)} MB`,
+      caption: caption || null
+    };
+
+    // 6. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'video',
+      caption || 'Vídeo enviado',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase
+    );
+
+    console.log(`✅ [CONVERSATION] Vídeo enviado via upload:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: req.file.originalname
+    });
+
+    res.json({
+      success: true,
+      message: 'Vídeo enviado com sucesso via upload',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: req.file.originalname,
+        fileSize: attachmentData.size,
+        storageUrl: publicUrl,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'video'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no upload de vídeo:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Upload e envio de documento direto via conversation_id
+router.post('/upload-document', upload.single('document'), async (req, res) => {
+  try {
+    const { conversation_id, caption, delay = 1500 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id e arquivo do documento',
+        example: 'Use multipart/form-data com campo "document" e conversation_id no body'
+      });
+    }
+
+    console.log(`📄 [CONVERSATION] Upload de documento:`, {
+      conversationId: conversation_id,
+      filename: req.file.originalname,
+      size: `${Math.round(req.file.size / 1024)} KB`
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Upload para Supabase Storage
+    const fileName = `conversation_${conversation_id}_${Date.now()}_${req.file.originalname}`;
+    const filePath = `conversation-media/${companyId}/${fileName}`;
+
+    const { data: uploadData, error: uploadError } = await req.supabase.storage
+      .from('media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadError) {
+      throw new Error(`Erro no upload: ${uploadError.message}`);
+    }
+
+    // 3. Obter URL pública
+    const { data: { publicUrl } } = req.supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+
+    // 4. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: publicUrl,
+        caption: caption || '',
+        fileName: req.file.originalname,
+        mediatype: 'document',
+        options: {
+          delay: delay,
+          presence: 'composing'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar documento');
+    }
+
+    // 5. Preparar dados do attachment
+    const attachmentData = {
+      name: req.file.originalname,
+      url: publicUrl,
+      type: 'document',
+      mimetype: req.file.mimetype,
+      size: `${Math.round(req.file.size / 1024)} KB`,
+      caption: caption || null
+    };
+
+    // 6. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'document',
+      caption || `Documento: ${req.file.originalname}`,
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase
+    );
+
+    console.log(`✅ [CONVERSATION] Documento enviado via upload:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: req.file.originalname
+    });
+
+    res.json({
+      success: true,
+      message: 'Documento enviado com sucesso via upload',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: req.file.originalname,
+        fileSize: attachmentData.size,
+        storageUrl: publicUrl,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'document'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no upload de documento:', error);
     res.status(500).json({
       success: false,
       error: error.message
