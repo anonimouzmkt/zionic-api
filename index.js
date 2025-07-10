@@ -46,12 +46,12 @@ const authenticateApiKey = async (req, res, next) => {
     }
 
     console.log('🔍 Buscando API key:', apiKey.substring(0, 10) + '...');
-    console.log('🔗 Testando conexão Supabase...');
 
-    // ✅ NOVA ABORDAGEM: Buscar usando JSON path para encontrar a API key diretamente
+    // ✅ CORRIGIDO: Buscar API keys em company_settings.api_integrations (SEM JOIN)
     const { data: companySettings, error } = await supabase
       .from('company_settings')
-      .select('*');
+      .select('company_id, api_integrations')
+      .not('api_integrations', 'is', null);
 
     if (error) {
       console.error('❌ Erro ao buscar company_settings:', error);
@@ -60,29 +60,15 @@ const authenticateApiKey = async (req, res, next) => {
       });
     }
 
-    console.log(`📊 Total de configurações encontradas: ${companySettings?.length || 0}`);
-
-    // ✅ DEBUG: Mostrar algumas configurações encontradas
-    if (companySettings && companySettings.length > 0) {
-      companySettings.forEach((setting, index) => {
-        console.log(`📋 Config ${index + 1}: Company ID = ${setting.company_id}`);
-        console.log(`   - Tem api_integrations: ${!!setting.api_integrations}`);
-        if (setting.api_integrations?.api_keys) {
-          console.log(`   - Total API keys: ${setting.api_integrations.api_keys.length}`);
-          setting.api_integrations.api_keys.forEach((key, keyIndex) => {
-            console.log(`     Key ${keyIndex + 1}: ${key.key?.substring(0, 10)}... enabled=${key.enabled}`);
-          });
-        }
-      });
-    }
+    console.log(`📊 Encontradas ${companySettings?.length || 0} empresas com API integrations`);
 
     let validApiKey = null;
     let companyId = null;
     let companyName = null;
 
-    // ✅ BUSCA SIMPLIFICADA: Percorrer todos os registros
-    for (const setting of companySettings || []) {
-      if (setting.api_integrations?.api_keys) {
+    // ✅ CORRIGIDO: Procurar a API key nas configurações corretas
+    for (const setting of companySettings) {
+      if (setting.api_integrations && setting.api_integrations.api_keys) {
         const apiKeyData = setting.api_integrations.api_keys.find(
           key => key.key === apiKey && key.enabled === true
         );
@@ -108,7 +94,6 @@ const authenticateApiKey = async (req, res, next) => {
 
     if (!validApiKey) {
       console.log('❌ API Key não encontrada ou inativa:', apiKey.substring(0, 10) + '...');
-      console.log('❌ Total de configurações verificadas:', companySettings?.length || 0);
       return res.status(401).json({
         error: 'API Key inválida ou inativa',
         message: 'Verifique se a API Key está correta e ativa'
