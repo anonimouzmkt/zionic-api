@@ -144,11 +144,72 @@ const conversationRoutes = require('./routes/conversation');
 app.get('/', (req, res) => {
   res.json({ 
     message: 'API Zionic funcionando!',
-    version: '3.0',
+    version: '3.1',
     endpoints: {
       messages: '/api/messages',
       conversation: '/api/conversation',
       auth_test: '/api/auth/test'
+    },
+    available_routes: {
+      authentication: {
+        test: 'GET /api/auth/test - Testar autenticação'
+      },
+      messages: {
+        send_text: 'POST /api/messages/send-text - Enviar mensagem de texto',
+        send_media: 'POST /api/messages/send-media - Enviar mídia',
+        send_document: 'POST /api/messages/send-document - Enviar documento',
+        mark_read: 'POST /api/messages/mark-read - Marcar como lida'
+      },
+      conversation: {
+        send_text: 'POST /api/conversation/send-text - Enviar mensagem via conversa',
+        send_media: 'POST /api/conversation/send-media - Enviar mídia via conversa',
+        send_document: 'POST /api/conversation/send-document - Enviar documento via conversa',
+        agent_control: 'POST /api/conversation/agent-control - Pausar ou atribuir agentes'
+      }
+    },
+    agent_control_actions: {
+      assign_ai: 'Atribuir agente IA à conversa',
+      pause_ai: 'Pausar agente IA (mantém atribuição)',
+      resume_ai: 'Reativar agente IA',
+      assign_human: 'Atribuir agente humano',
+      unassign_human: 'Remover atribuição humana',
+      remove_ai: 'Remover agente IA completamente'
+    },
+    authentication: {
+      type: 'Bearer Token',
+      header: 'Authorization: Bearer YOUR_API_KEY',
+      api_key_format: 'zio_xxxxxxxxxx',
+      note: 'Todas as rotas exceto / e /health requerem autenticação'
+    },
+    examples: {
+      agent_control: {
+        assign_ai: {
+          url: 'POST /api/conversation/agent-control',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            conversation_id: 'uuid-da-conversa',
+            action: 'assign_ai',
+            ai_agent_id: 'uuid-do-agente-ia'
+          }
+        },
+        pause_ai: {
+          url: 'POST /api/conversation/agent-control',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            conversation_id: 'uuid-da-conversa',
+            action: 'pause_ai'
+          }
+        },
+        assign_human: {
+          url: 'POST /api/conversation/agent-control',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            conversation_id: 'uuid-da-conversa',
+            action: 'assign_human',
+            assigned_to: 'uuid-do-usuario'
+          }
+        }
+      }
     }
   });
 });
@@ -159,7 +220,7 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     message: 'API funcionando normalmente',
     timestamp: new Date().toISOString(),
-    version: '3.0'
+    version: '3.1'
   });
 });
 
