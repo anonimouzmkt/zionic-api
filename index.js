@@ -139,6 +139,10 @@ const authenticateApiKey = async (req, res, next) => {
 // Importar rotas
 const messageRoutes = require('./routes/messages');
 const conversationRoutes = require('./routes/conversation');
+const calendarRoutes = require('./routes/calendar');
+const leadsRoutes = require('./routes/leads');
+const pipelinesRoutes = require('./routes/pipelines');
+const columnsRoutes = require('./routes/columns');
 
 // Rota de teste
 app.get('/', (req, res) => {
@@ -148,6 +152,10 @@ app.get('/', (req, res) => {
     endpoints: {
       messages: '/api/messages',
       conversation: '/api/conversation',
+      calendar: '/api/calendar',
+      leads: '/api/leads',
+      pipelines: '/api/pipelines',
+      columns: '/api/columns',
       auth_test: '/api/auth/test'
     },
     available_routes: {
@@ -165,6 +173,35 @@ app.get('/', (req, res) => {
         send_media: 'POST /api/conversation/send-media - Enviar mídia via conversa',
         send_document: 'POST /api/conversation/send-document - Enviar documento via conversa',
         agent_control: 'POST /api/conversation/agent-control - Pausar ou atribuir agentes'
+      },
+      calendar: {
+        availability: 'GET /api/calendar/availability/:date - Verificar disponibilidade de horário',
+        schedule: 'POST /api/calendar/schedule - Agendar horário',
+        list: 'GET /api/calendar/appointments - Listar agendamentos',
+        update: 'PUT /api/calendar/appointments/:id - Atualizar agendamento',
+        delete: 'DELETE /api/calendar/appointments/:id - Deletar agendamento'
+      },
+      leads: {
+        list: 'GET /api/leads - Listar todos os leads',
+        get: 'GET /api/leads/:id - Obter lead específico',
+        create: 'POST /api/leads - Criar novo lead',
+        update: 'PUT /api/leads/:id - Atualizar lead',
+        delete: 'DELETE /api/leads/:id - Deletar lead',
+        move: 'POST /api/leads/:id/move - Mover lead entre colunas',
+        column_leads: 'GET /api/leads/column/:column_id - Listar leads de uma coluna'
+      },
+      pipelines: {
+        list: 'GET /api/pipelines - Listar pipelines',
+        get: 'GET /api/pipelines/:id - Obter pipeline específico',
+        default: 'GET /api/pipelines/default/info - Obter pipeline padrão',
+        columns: 'GET /api/pipelines/:id/columns - Listar colunas de um pipeline',
+        all_columns: 'GET /api/pipelines/columns/all - Listar todas as colunas',
+        stats: 'GET /api/pipelines/:id/stats - Estatísticas do pipeline'
+      },
+      columns: {
+        list: 'GET /api/columns - Listar todas as colunas',
+        get: 'GET /api/columns/:id - Obter coluna específica',
+        leads: 'GET /api/columns/:id/leads - Listar leads de uma coluna'
       }
     },
     agent_control_actions: {
@@ -209,6 +246,83 @@ app.get('/', (req, res) => {
             assigned_to: 'uuid-do-usuario'
           }
         }
+      },
+      calendar: {
+        check_availability: {
+          url: 'GET /api/calendar/availability/2024-07-15?start_hour=08:00&end_hour=18:00',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        },
+        schedule_appointment: {
+          url: 'POST /api/calendar/schedule',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            title: 'Reunião com Cliente',
+            description: 'Apresentação do produto',
+            start_time: '2024-07-15T14:00:00.000Z',
+            end_time: '2024-07-15T15:00:00.000Z',
+            location: 'Escritório',
+            attendees: ['cliente@empresa.com'],
+            lead_id: 'uuid-do-lead',
+            create_meet: true
+          }
+        },
+        list_appointments: {
+          url: 'GET /api/calendar/appointments?date=2024-07-15&status=scheduled',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        }
+      },
+      leads: {
+        list_leads: {
+          url: 'GET /api/leads?status=new&priority=high&search=empresa',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        },
+        create_lead: {
+          url: 'POST /api/leads',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            title: 'Novo Lead',
+            description: 'Lead interessado em nosso produto',
+            estimated_value: 5000,
+            priority: 'high',
+            source: 'website',
+            contact_name: 'João Silva',
+            contact_email: 'joao@empresa.com',
+            contact_phone: '+5511999999999',
+            tags: ['quente', 'produto-a']
+          }
+        },
+        move_lead: {
+          url: 'POST /api/leads/lead-uuid/move',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            column_id: 'column-uuid',
+            position: 0
+          }
+        }
+      },
+      pipelines: {
+        list_pipelines: {
+          url: 'GET /api/pipelines',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        },
+        get_default_pipeline: {
+          url: 'GET /api/pipelines/default/info',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        },
+        get_pipeline_stats: {
+          url: 'GET /api/pipelines/pipeline-uuid/stats',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        }
+      },
+      columns: {
+        list_columns: {
+          url: 'GET /api/columns',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        },
+        get_column_leads: {
+          url: 'GET /api/columns/column-uuid/leads',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        }
       }
     }
   });
@@ -240,6 +354,10 @@ app.get('/api/auth/test', authenticateApiKey, (req, res) => {
 // Usar rotas (com autenticação)
 app.use('/api/messages', authenticateApiKey, messageRoutes);
 app.use('/api/conversation', authenticateApiKey, conversationRoutes);
+app.use('/api/calendar', authenticateApiKey, calendarRoutes);
+app.use('/api/leads', authenticateApiKey, leadsRoutes);
+app.use('/api/pipelines', authenticateApiKey, pipelinesRoutes);
+app.use('/api/columns', authenticateApiKey, columnsRoutes);
 
 app.listen(port, () => {
   console.log(`🚀 API rodando na porta ${port}`);
