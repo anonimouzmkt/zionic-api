@@ -121,7 +121,7 @@ async function getConversationData(conversationId, companyId, supabase) {
 }
 
 // ✅ HELPER: Salvar mensagem no banco
-async function saveMessageToDatabase(conversationId, direction, messageType, content, attachment, sentByAi, externalId, supabase) {
+async function saveMessageToDatabase(conversationId, direction, messageType, content, attachment, sentByAi, externalId, supabase, sentViaAgent = false) {
   try {
     const messageData = {
       conversation_id: conversationId,
@@ -134,6 +134,10 @@ async function saveMessageToDatabase(conversationId, direction, messageType, con
       external_id: externalId,
       metadata: attachment ? { attachment } : { sent_via: 'conversation_api' }
     };
+
+    if (sentViaAgent) {
+      messageData.metadata.sent_via_agent = true;
+    }
 
     const { data, error } = await supabase
       .from('messages')
@@ -170,7 +174,7 @@ async function saveMessageToDatabase(conversationId, direction, messageType, con
 // ✅ ROTA: Enviar mensagem de texto via conversation_id
 router.post('/send-text', async (req, res) => {
   try {
-    const { conversation_id, message, delay = 1000 } = req.body;
+    const { conversation_id, message, delay = 1000, sent_via_agent = false } = req.body;
     const companyId = req.company.id;
     const apiKeyData = req.apiKey;
 
@@ -182,7 +186,8 @@ router.post('/send-text', async (req, res) => {
         example: {
           conversation_id: "uuid-da-conversa",
           message: "Sua mensagem aqui",
-          delay: 1000
+          delay: 1000,
+          sent_via_agent: false // ✅ NOVO: indica se foi enviado via agent custom
         }
       });
     }
@@ -191,7 +196,8 @@ router.post('/send-text', async (req, res) => {
       company: req.company.name,
       apiKey: apiKeyData.name,
       conversationId: conversation_id,
-      messageLength: message.length
+      messageLength: message.length,
+      sentViaAgent: sent_via_agent // ✅ NOVO: Log do flag
     });
 
     // 1. Buscar dados da conversa
@@ -238,13 +244,15 @@ router.post('/send-text', async (req, res) => {
       null,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      sent_via_agent // ✅ NOVO: Passar flag para salvar no metadata
     );
 
     console.log(`✅ [CONVERSATION] Mensagem de texto enviada:`, {
       conversationId: conversation_id,
       messageId: saveResult.messageId,
-      evolutionId: evolutionResult.key?.id
+      evolutionId: evolutionResult.key?.id,
+      sentViaAgent: sent_via_agent // ✅ NOVO: Log confirmação
     });
 
     res.json({
@@ -258,7 +266,8 @@ router.post('/send-text', async (req, res) => {
         evolutionId: evolutionResult.key?.id,
         content: message,
         sentAt: new Date().toISOString(),
-        type: 'text'
+        type: 'text',
+        sentViaAgent: sent_via_agent // ✅ NOVO: Retornar flag na resposta
       }
     });
 
@@ -350,7 +359,8 @@ router.post('/send-image', async (req, res) => {
       attachmentData,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      false // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Imagem enviada:`, {
@@ -468,7 +478,8 @@ router.post('/send-audio', async (req, res) => {
       attachmentData,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      false // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Áudio enviado:`, {
@@ -580,7 +591,8 @@ router.post('/send-video', async (req, res) => {
       attachmentData,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      false // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Vídeo enviado:`, {
@@ -695,7 +707,8 @@ router.post('/send-document', async (req, res) => {
       attachmentData,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      false // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Documento enviado:`, {
@@ -979,7 +992,8 @@ router.post('/upload-image', upload.single('image'), async (req, res) => {
       attachmentData,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      false // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Imagem enviada via upload:`, {
@@ -1106,7 +1120,8 @@ router.post('/upload-audio', upload.single('audio'), async (req, res) => {
       attachmentData,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      false // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Áudio enviado via upload:`, {
@@ -1238,7 +1253,8 @@ router.post('/upload-video', upload.single('video'), async (req, res) => {
       attachmentData,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      false // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Vídeo enviado via upload:`, {
@@ -1372,7 +1388,8 @@ router.post('/upload-document', upload.single('document'), async (req, res) => {
       attachmentData,
       false,
       evolutionResult.key?.id,
-      req.supabase
+      req.supabase,
+      false // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Documento enviado via upload:`, {
