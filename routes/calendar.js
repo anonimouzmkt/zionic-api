@@ -1,656 +1,1683 @@
 const express = require('express');
+const fetch = require('node-fetch');
+const multer = require('multer');
 const router = express.Router();
 
-// ✅ HELPER: Validar formato de data
-function isValidDate(dateString) {
-  const date = new Date(dateString);
-  return !isNaN(date.getTime());
+// Configurar multer para upload de arquivos
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB
+  }
+});
+
+// ✅ HELPER: Extrair número de telefone limpo
+function extractPhoneNumber(externalId) {
+  if (!externalId) return '';
+  
+  // Extrair número do formato "5511999999999@s.whatsapp.net"
+  const match = externalId.match(/^(\d+)@/);
+  return match ? match[1] : '';
 }
 
-// ✅ HELPER: Formatar data para ISO string
-function formatToISO(dateString, time = null) {
-  if (time) {
-    return new Date(`${dateString}T${time}:00.000Z`).toISOString();
-  }
-  return new Date(dateString).toISOString();
-}
-
-// ✅ HELPER: Verificar se empresa tem integração ativa do Google Calendar
-async function checkGoogleCalendarIntegration(companyId, supabase) {
-  const { data, error } = await supabase
-    .from('google_calendar_integrations')
-    .select('id, status, access_token, is_active')
-    .eq('company_id', companyId)
-    .eq('is_active', true)
-    .single();
-
-  if (error || !data) {
-    return {
-      hasIntegration: false,
-      error: 'Integração do Google Calendar não encontrada'
-    };
-  }
-
-  if (data.status !== 'connected' || !data.access_token) {
-    return {
-      hasIntegration: false,
-      error: 'Google Calendar não está conectado'
-    };
-  }
-
+// ✅ HELPER: Fallback para configurações Evolution usando env vars
+function getEvolutionConfigFallback(instanceName = 'default') {
   return {
-    hasIntegration: true,
-    integration: data
+    id: 'env-fallback',
+    name: instanceName,
+    phone_number: '',
+    server_url: process.env.EVOLUTION_API_URL || 'https://evowise.anonimouz.com',
+    api_key: process.env.EVOLUTION_API_KEY || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W',
+    status: 'connected'
   };
 }
 
-// ✅ 1. ENDPOINT: Verificar disponibilidade de horário
-router.get('/availability/:date', async (req, res) => {
+// ✅ HELPER: Buscar dados completos da conversa (USA INSTANCE REAL + ENV VARS)
+async function getConversationData(conversationId, companyId, supabase) {
   try {
-    const { company } = req;
-    const { date } = req.params;
-    const { start_hour = '08:00', end_hour = '18:00' } = req.query;
-
-    // Validar data
-    if (!isValidDate(date)) {
-      return res.status(400).json({
-        error: 'Data inválida',
-        message: 'Use formato YYYY-MM-DD'
-      });
-    }
-
-    // Definir período do dia
-    const startDateTime = formatToISO(date, start_hour);
-    const endDateTime = formatToISO(date, end_hour);
-
-    console.log(`🔍 Verificando disponibilidade para ${date} entre ${start_hour} e ${end_hour}`);
-
-    // Buscar appointments do dia
-    const { data: appointments, error } = await req.supabase
-      .from('appointments')
-      .select('id, title, start_time, end_time, status')
-      .eq('company_id', company.id)
-      .gte('start_time', startDateTime)
-      .lte('end_time', endDateTime)
-      .neq('status', 'cancelled')
-      .order('start_time', { ascending: true });
-
-    if (error) {
-      console.error('❌ Erro ao buscar appointments:', error);
-      return res.status(500).json({
-        error: 'Erro interno do servidor',
-        details: error.message
-      });
-    }
-
-    // Calcular horários ocupados
-    const busySlots = appointments.map(apt => ({
-      id: apt.id,
-      title: apt.title,
-      start: apt.start_time,
-      end: apt.end_time,
-      status: apt.status
-    }));
-
-    // Determinar se o dia está livre
-    const isFree = busySlots.length === 0;
-
-    return res.json({
-      success: true,
-      date,
-      is_free: isFree,
-      total_appointments: busySlots.length,
-      busy_slots: busySlots,
-      availability_window: {
-        start: startDateTime,
-        end: endDateTime
-      },
-      company: {
-        id: company.id,
-        name: company.name
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Erro em /availability:', error);
-    return res.status(500).json({
-      error: 'Erro interno do servidor',
-      details: error.message
-    });
-  }
-});
-
-// ✅ 2. ENDPOINT: Agendar horário
-router.post('/schedule', async (req, res) => {
-  try {
-    const { company } = req;
-    const {
-      title,
-      description,
-      start_time,
-      end_time,
-      location,
-      attendees = [],
-      lead_id,
-      create_meet = true,
-      all_day = false
-    } = req.body;
-
-    // Validações obrigatórias
-    if (!title || !start_time || !end_time) {
-      return res.status(400).json({
-        error: 'Dados obrigatórios faltando',
-        message: 'title, start_time e end_time são obrigatórios'
-      });
-    }
-
-    // Validar datas
-    if (!isValidDate(start_time) || !isValidDate(end_time)) {
-      return res.status(400).json({
-        error: 'Datas inválidas',
-        message: 'Use formato ISO 8601 (YYYY-MM-DDTHH:mm:ss.sssZ)'
-      });
-    }
-
-    // Verificar se end_time é após start_time
-    if (new Date(end_time) <= new Date(start_time)) {
-      return res.status(400).json({
-        error: 'Horário inválido',
-        message: 'Horário de fim deve ser posterior ao de início'
-      });
-    }
-
-    console.log(`📅 Agendando: ${title} para ${start_time} - ${end_time}`);
-
-    // Verificar se lead_id existe (se fornecido)
-    if (lead_id) {
-      const { data: lead, error: leadError } = await req.supabase
-        .from('leads')
-        .select('id, contact_id')
-        .eq('id', lead_id)
-        .eq('company_id', company.id)
-        .single();
-
-      if (leadError || !lead) {
-        return res.status(400).json({
-          error: 'Lead não encontrado',
-          message: 'O lead_id fornecido não existe ou não pertence à empresa'
-        });
-      }
-    }
-
-    // Verificar conflitos de horário
-    const { data: conflicts, error: conflictError } = await req.supabase
-      .from('appointments')
-      .select('id, title, start_time, end_time')
-      .eq('company_id', company.id)
-      .neq('status', 'cancelled')
-      .or(`and(start_time.lte.${start_time},end_time.gte.${start_time}),and(start_time.lte.${end_time},end_time.gte.${end_time}),and(start_time.gte.${start_time},end_time.lte.${end_time})`);
-
-    if (conflictError) {
-      console.error('❌ Erro ao verificar conflitos:', conflictError);
-      return res.status(500).json({
-        error: 'Erro ao verificar conflitos',
-        details: conflictError.message
-      });
-    }
-
-    if (conflicts && conflicts.length > 0) {
-      return res.status(409).json({
-        error: 'Conflito de horário',
-        message: 'Já existe um agendamento neste horário',
-        conflicts: conflicts
-      });
-    }
-
-    // Preparar dados dos participantes
-    const attendeesJson = Array.isArray(attendees) 
-      ? attendees.map(email => typeof email === 'string' 
-          ? { email, displayName: email.split('@')[0] }
-          : email)
-      : [];
-
-    // Criar appointment no banco
-    const { data: appointment, error: createError } = await req.supabase
-      .from('appointments')
-      .insert({
-        company_id: company.id,
-        created_by: req.apiKey.created_by || null, // API key pode não ter usuário
-        title,
-        description,
-        start_time,
-        end_time,
-        location,
-        attendees: attendeesJson,
-        lead_id,
-        create_meet,
-        all_day,
-        status: 'scheduled'
-      })
-      .select('*')
+    console.log('🔍 Buscando conversa com instance real + env vars para configuração');
+    
+    // Buscar conversa + contato + instance_id
+    const { data: conversation, error: convError } = await supabase
+      .from('conversations')
+      .select(`
+        id, company_id, contact_id, external_id, title, status, whatsapp_instance_id,
+        contacts!inner(
+          id, first_name, last_name, full_name, phone, email, company_name
+        )
+      `)
+      .eq('id', conversationId)
+      .eq('company_id', companyId)
       .single();
 
-    if (createError) {
-      console.error('❌ Erro ao criar appointment:', createError);
-      return res.status(500).json({
-        error: 'Erro ao criar agendamento',
-        details: createError.message
-      });
-    }
-
-    console.log(`✅ Appointment criado: ${appointment.id}`);
-
-    // Verificar integração com Google Calendar
-    const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
-
-    let googleEventInfo = null;
-    if (googleIntegration.hasIntegration) {
-      console.log('🔄 Tentando sincronizar com Google Calendar...');
-      
-      // Aqui seria feita a integração com Google Calendar
-      // Por enquanto, apenas marcar que foi tentado
-      googleEventInfo = {
-        integration_status: 'attempted',
-        message: 'Sincronização com Google Calendar será processada'
+    if (convError || !conversation) {
+      return {
+        success: false,
+        error: 'Conversa não encontrada ou sem acesso',
+        details: convError?.message
       };
     }
 
-    return res.status(201).json({
-      success: true,
-      message: 'Agendamento criado com sucesso',
-      appointment: {
-        id: appointment.id,
-        title: appointment.title,
-        description: appointment.description,
-        start_time: appointment.start_time,
-        end_time: appointment.end_time,
-        location: appointment.location,
-        status: appointment.status,
-        attendees: appointment.attendees,
-        lead_id: appointment.lead_id,
-        created_at: appointment.created_at
-      },
-      google_calendar: googleEventInfo,
-      company: {
-        id: company.id,
-        name: company.name
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Erro em /schedule:', error);
-    return res.status(500).json({
-      error: 'Erro interno do servidor',
-      details: error.message
-    });
-  }
-});
-
-// ✅ 3. ENDPOINT: Listar agendamentos
-router.get('/appointments', async (req, res) => {
-  try {
-    const { company } = req;
-    const { 
-      date,
-      start_date,
-      end_date,
-      status,
-      lead_id,
-      limit = 50,
-      page = 1
-    } = req.query;
-
-    let query = req.supabase
-      .from('appointments')
-      .select(`
-        id, title, description, start_time, end_time, location,
-        status, attendees, all_day, google_event_id, google_meet_link,
-        lead_id, created_at, updated_at,
-        leads(id, title, status),
-        users!appointments_created_by_fkey(id, first_name, last_name, full_name)
-      `)
-      .eq('company_id', company.id)
-      .order('start_time', { ascending: true });
-
-    // Filtros de data
-    if (date) {
-      if (!isValidDate(date)) {
-        return res.status(400).json({
-          error: 'Data inválida',
-          message: 'Use formato YYYY-MM-DD'
-        });
-      }
-      const startOfDay = formatToISO(date, '00:00');
-      const endOfDay = formatToISO(date, '23:59');
-      query = query.gte('start_time', startOfDay).lte('start_time', endOfDay);
-    } else if (start_date && end_date) {
-      if (!isValidDate(start_date) || !isValidDate(end_date)) {
-        return res.status(400).json({
-          error: 'Datas inválidas',
-          message: 'Use formato YYYY-MM-DD'
-        });
-      }
-      query = query.gte('start_time', start_date).lte('end_time', end_date);
-    }
-
-    // Outros filtros
-    if (status) {
-      query = query.eq('status', status);
-    }
-    if (lead_id) {
-      query = query.eq('lead_id', lead_id);
-    }
-
-    // Paginação
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    query = query.range(offset, offset + parseInt(limit) - 1);
-
-    const { data: appointments, error, count } = await query;
-
-    if (error) {
-      console.error('❌ Erro ao buscar appointments:', error);
-      return res.status(500).json({
-        error: 'Erro interno do servidor',
-        details: error.message
-      });
-    }
-
-    // Formatar resposta
-    const formattedAppointments = appointments.map(apt => ({
-      id: apt.id,
-      title: apt.title,
-      description: apt.description,
-      start_time: apt.start_time,
-      end_time: apt.end_time,
-      location: apt.location,
-      status: apt.status,
-      attendees: apt.attendees,
-      all_day: apt.all_day,
-      google_event_id: apt.google_event_id,
-      google_meet_link: apt.google_meet_link,
-      lead: apt.leads ? {
-        id: apt.leads.id,
-        title: apt.leads.title,
-        status: apt.leads.status
-      } : null,
-      created_by: apt.users ? {
-        id: apt.users.id,
-        name: apt.users.full_name || `${apt.users.first_name} ${apt.users.last_name}`.trim()
-      } : null,
-      created_at: apt.created_at,
-      updated_at: apt.updated_at
-    }));
-
-    return res.json({
-      success: true,
-      appointments: formattedAppointments,
-      pagination: {
-        total: count || formattedAppointments.length,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        has_more: formattedAppointments.length === parseInt(limit)
-      },
-      filters: {
-        date,
-        start_date,
-        end_date,
-        status,
-        lead_id
-      },
-      company: {
-        id: company.id,
-        name: company.name
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Erro em /appointments:', error);
-    return res.status(500).json({
-      error: 'Erro interno do servidor',
-      details: error.message
-    });
-  }
-});
-
-// ✅ 4. ENDPOINT: Cancelar/Editar agendamento
-router.put('/appointments/:id', async (req, res) => {
-  try {
-    const { company } = req;
-    const { id } = req.params;
-    const {
-      title,
-      description,
-      start_time,
-      end_time,
-      location,
-      attendees,
-      status,
-      create_meet,
-      all_day
-    } = req.body;
-
-    // Verificar se appointment existe
-    const { data: existingAppointment, error: findError } = await req.supabase
-      .from('appointments')
-      .select('*')
-      .eq('id', id)
-      .eq('company_id', company.id)
+    // Buscar dados básicos da instância (só ID e nome)
+    const { data: instance, error: instanceError } = await supabase
+      .from('whatsapp_instances')
+      .select('id, name, phone_number')
+      .eq('id', conversation.whatsapp_instance_id)
       .single();
 
-    if (findError || !existingAppointment) {
+    if (instanceError || !instance) {
+      return {
+        success: false,
+        error: 'Instância WhatsApp não encontrada',
+        details: instanceError?.message
+      };
+    }
+
+    // Extrair dados estruturados
+    const contact = conversation.contacts;
+    const externalId = conversation.external_id;
+    const phoneNumber = extractPhoneNumber(externalId);
+
+    // USA ENV VARS para configuração + dados reais da instância
+    const instanceData = {
+      id: instance.id,
+      name: instance.name,
+      phone_number: instance.phone_number || '',
+      server_url: process.env.EVOLUTION_API_URL || 'https://evowise.anonimouz.com',
+      api_key: process.env.EVOLUTION_API_KEY || 'GfwncPVPb2ou4i1DMI9IEAVVR3p0fI7W',
+      status: 'connected'
+    };
+
+    return {
+      success: true,
+      data: {
+        conversation: {
+          id: conversation.id,
+          company_id: conversation.company_id,
+          contact_id: conversation.contact_id,
+          external_id: conversation.external_id,
+          title: conversation.title,
+          status: conversation.status
+        },
+        contact: {
+          id: contact.id,
+          name: contact.full_name || `${contact.first_name} ${contact.last_name}`.trim(),
+          phone: contact.phone || phoneNumber,
+          email: contact.email,
+          company: contact.company_name,
+          whatsapp_phone: phoneNumber
+        },
+        instance: instanceData
+      }
+    };
+
+  } catch (error) {
+    console.error('❌ Erro em getConversationData:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// ✅ HELPER: Salvar mensagem no banco
+async function saveMessageToDatabase(conversationId, direction, messageType, content, attachment, sentByAi, externalId, supabase, sentViaAgent = false) {
+  try {
+    const messageData = {
+      conversation_id: conversationId,
+      direction,
+      message_type: messageType,
+      content,
+      sent_by_ai: sentByAi || false,
+      status: 'sent',
+      sent_at: new Date().toISOString(),
+      external_id: externalId,
+      metadata: attachment ? { attachment } : { sent_via: 'conversation_api' }
+    };
+
+    if (sentViaAgent) {
+      messageData.metadata.sent_via_agent = true;
+    }
+
+    const { data, error } = await supabase
+      .from('messages')
+      .insert(messageData)
+      .select('id')
+      .single();
+
+    if (error) throw error;
+
+    // Atualizar timestamp da conversa
+    await supabase
+      .from('conversations')
+      .update({ 
+        last_message_at: new Date().toISOString()
+      })
+      .eq('id', conversationId);
+
+    return {
+      success: true,
+      messageId: data.id
+    };
+
+  } catch (error) {
+    console.error('❌ Erro ao salvar mensagem:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// ===== ROTAS BASEADAS EM CONVERSATION_ID =====
+
+// ✅ ROTA: Enviar mensagem de texto via conversation_id
+router.post('/send-text', async (req, res) => {
+  try {
+    const { conversation_id, message, delay = 1000, sent_via_agent = false } = req.body;
+    const companyId = req.company.id;
+    const apiKeyData = req.apiKey;
+
+    // Validações
+    if (!conversation_id || !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id, message',
+        example: {
+          conversation_id: "uuid-da-conversa",
+          message: "Sua mensagem aqui",
+          delay: 1000,
+          sent_via_agent: false // ✅ NOVO: indica se foi enviado via agent custom
+        }
+      });
+    }
+
+    console.log(`📤 [CONVERSATION] Enviando mensagem de texto:`, {
+      company: req.company.name,
+      apiKey: apiKeyData.name,
+      conversationId: conversation_id,
+      messageLength: message.length,
+      sentViaAgent: sent_via_agent // ✅ NOVO: Log do flag
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
       return res.status(404).json({
-        error: 'Agendamento não encontrado',
-        message: 'O agendamento não existe ou não pertence à empresa'
+        success: false,
+        error: conversationResult.error,
+        details: conversationResult.details
       });
     }
 
-    // Validar datas se fornecidas
-    if (start_time && !isValidDate(start_time)) {
-      return res.status(400).json({
-        error: 'start_time inválido',
-        message: 'Use formato ISO 8601'
-      });
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendText/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        text: message,
+        options: {
+          delay: delay,
+          presence: 'composing'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro na Evolution API');
     }
 
-    if (end_time && !isValidDate(end_time)) {
-      return res.status(400).json({
-        error: 'end_time inválido', 
-        message: 'Use formato ISO 8601'
-      });
-    }
+    // 3. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'text',
+      message,
+      null,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      sent_via_agent // ✅ NOVO: Passar flag para salvar no metadata
+    );
 
-    // Verificar se end_time é após start_time (se ambos fornecidos)
-    const newStartTime = start_time || existingAppointment.start_time;
-    const newEndTime = end_time || existingAppointment.end_time;
-    
-    if (new Date(newEndTime) <= new Date(newStartTime)) {
-      return res.status(400).json({
-        error: 'Horário inválido',
-        message: 'Horário de fim deve ser posterior ao de início'
-      });
-    }
+    console.log(`✅ [CONVERSATION] Mensagem de texto enviada:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      evolutionId: evolutionResult.key?.id,
+      sentViaAgent: sent_via_agent // ✅ NOVO: Log confirmação
+    });
 
-    // Verificar conflitos (se mudando horário)
-    if (start_time || end_time) {
-      const { data: conflicts, error: conflictError } = await req.supabase
-        .from('appointments')
-        .select('id, title, start_time, end_time')
-        .eq('company_id', company.id)
-        .neq('id', id) // Excluir o próprio appointment
-        .neq('status', 'cancelled')
-        .or(`and(start_time.lte.${newStartTime},end_time.gte.${newStartTime}),and(start_time.lte.${newEndTime},end_time.gte.${newEndTime}),and(start_time.gte.${newStartTime},end_time.lte.${newEndTime})`);
-
-      if (conflictError) {
-        console.error('❌ Erro ao verificar conflitos:', conflictError);
-        return res.status(500).json({
-          error: 'Erro ao verificar conflitos',
-          details: conflictError.message
-        });
+    res.json({
+      success: true,
+      message: 'Mensagem de texto enviada com sucesso',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        content: message,
+        sentAt: new Date().toISOString(),
+        type: 'text',
+        sentViaAgent: sent_via_agent // ✅ NOVO: Retornar flag na resposta
       }
+    });
 
-      if (conflicts && conflicts.length > 0) {
-        return res.status(409).json({
-          error: 'Conflito de horário',
-          message: 'Já existe um agendamento neste horário',
-          conflicts: conflicts
-        });
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no envio de texto:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Enviar imagem via conversation_id
+router.post('/send-image', async (req, res) => {
+  try {
+    const { conversation_id, image_url, caption, delay = 1200 } = req.body;
+    const companyId = req.company.id;
+    const apiKeyData = req.apiKey;
+
+    // Validações
+    if (!conversation_id || !image_url) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id, image_url',
+        example: {
+          conversation_id: "uuid-da-conversa",
+          image_url: "https://exemplo.com/imagem.jpg",
+          caption: "Legenda opcional",
+          delay: 1200
+        }
+      });
+    }
+
+    console.log(`📸 [CONVERSATION] Enviando imagem:`, {
+      company: req.company.name,
+      conversationId: conversation_id,
+      imageUrl: image_url.substring(0, 50) + '...'
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: image_url,
+        caption: caption || '',
+        options: {
+          delay: delay,
+          presence: 'composing'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar imagem');
+    }
+
+    // 3. Preparar dados do attachment
+    const attachmentData = {
+      name: 'image.jpg',
+      url: image_url,
+      type: 'image',
+      caption: caption || null
+    };
+
+    // 4. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'image',
+      caption || 'Imagem enviada',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      false // sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Imagem enviada:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      caption: caption
+    });
+
+    res.json({
+      success: true,
+      message: 'Imagem enviada com sucesso',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        imageUrl: image_url,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'image'
       }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no envio de imagem:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Enviar áudio via conversation_id
+router.post('/send-audio', async (req, res) => {
+  try {
+    const { conversation_id, audio_url, delay = 1500 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !audio_url) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id, audio_url',
+        example: {
+          conversation_id: "uuid-da-conversa",
+          audio_url: "https://exemplo.com/audio.mp3",
+          delay: 1500
+        }
+      });
     }
 
-    // Preparar dados para atualização
-    const updateData = {};
-    if (title !== undefined) updateData.title = title;
-    if (description !== undefined) updateData.description = description;
-    if (start_time !== undefined) updateData.start_time = start_time;
-    if (end_time !== undefined) updateData.end_time = end_time;
-    if (location !== undefined) updateData.location = location;
-    if (status !== undefined) updateData.status = status;
-    if (create_meet !== undefined) updateData.create_meet = create_meet;
-    if (all_day !== undefined) updateData.all_day = all_day;
-    
-    if (attendees !== undefined) {
-      updateData.attendees = Array.isArray(attendees) 
-        ? attendees.map(email => typeof email === 'string' 
-            ? { email, displayName: email.split('@')[0] }
-            : email)
-        : [];
+    console.log(`🎵 [CONVERSATION] Enviando áudio:`, {
+      conversationId: conversation_id,
+      audioUrl: audio_url.substring(0, 50) + '...'
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
     }
 
-    // Atualizar appointment
-    const { data: updatedAppointment, error: updateError } = await req.supabase
-      .from('appointments')
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Baixar áudio e converter para base64
+    const audioResponse = await fetch(audio_url);
+    if (!audioResponse.ok) {
+      throw new Error('Erro ao baixar áudio da URL fornecida');
+    }
+
+    const audioBuffer = await audioResponse.buffer();
+    const audioBase64 = audioBuffer.toString('base64');
+
+    // 3. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendWhatsAppAudio/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        audiobase64: audioBase64,
+        options: {
+          delay: delay,
+          presence: 'recording'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar áudio');
+    }
+
+    // 4. Preparar dados do attachment
+    const attachmentData = {
+      name: 'audio.mp3',
+      url: audio_url,
+      type: 'audio',
+      size: Math.round(audioBuffer.length / 1024) + ' KB'
+    };
+
+    // 5. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'audio',
+      'Áudio enviado',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      false // sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Áudio enviado:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      audioSize: attachmentData.size
+    });
+
+    res.json({
+      success: true,
+      message: 'Áudio enviado com sucesso',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        audioUrl: audio_url,
+        fileSize: attachmentData.size,
+        sentAt: new Date().toISOString(),
+        type: 'audio'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no envio de áudio:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Enviar vídeo via conversation_id
+router.post('/send-video', async (req, res) => {
+  try {
+    const { conversation_id, video_url, caption, delay = 2000 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !video_url) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id, video_url',
+        example: {
+          conversation_id: "uuid-da-conversa",
+          video_url: "https://exemplo.com/video.mp4",
+          caption: "Legenda opcional",
+          delay: 2000
+        }
+      });
+    }
+
+    console.log(`🎬 [CONVERSATION] Enviando vídeo:`, {
+      conversationId: conversation_id,
+      videoUrl: video_url.substring(0, 50) + '...'
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: video_url,
+        caption: caption || '',
+        mediatype: 'video',
+        options: {
+          delay: delay,
+          presence: 'recording'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar vídeo');
+    }
+
+    // 3. Preparar dados do attachment
+    const attachmentData = {
+      name: 'video.mp4',
+      url: video_url,
+      type: 'video',
+      caption: caption || null
+    };
+
+    // 4. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'video',
+      caption || 'Vídeo enviado',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      false // sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Vídeo enviado:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      caption: caption
+    });
+
+    res.json({
+      success: true,
+      message: 'Vídeo enviado com sucesso',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        videoUrl: video_url,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'video'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no envio de vídeo:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Enviar documento via conversation_id
+router.post('/send-document', async (req, res) => {
+  try {
+    const { conversation_id, document_url, filename, caption, delay = 1500 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !document_url) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id, document_url',
+        example: {
+          conversation_id: "uuid-da-conversa",
+          document_url: "https://exemplo.com/documento.pdf",
+          filename: "documento.pdf",
+          caption: "Legenda opcional",
+          delay: 1500
+        }
+      });
+    }
+
+    console.log(`📄 [CONVERSATION] Enviando documento:`, {
+      conversationId: conversation_id,
+      documentUrl: document_url.substring(0, 50) + '...',
+      filename: filename
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: document_url,
+        caption: caption || '',
+        fileName: filename || 'documento',
+        mediatype: 'document',
+        options: {
+          delay: delay,
+          presence: 'composing'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar documento');
+    }
+
+    // 3. Preparar dados do attachment
+    const attachmentData = {
+      name: filename || 'documento',
+      url: document_url,
+      type: 'document',
+      caption: caption || null
+    };
+
+    // 4. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'document',
+      caption || `Documento: ${filename || 'arquivo'}`,
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      false // sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Documento enviado:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: filename
+    });
+
+    res.json({
+      success: true,
+      message: 'Documento enviado com sucesso',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        documentUrl: document_url,
+        filename: filename,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'document'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no envio de documento:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Marcar mensagem como lida via conversation_id
+router.post('/mark-read', async (req, res) => {
+  try {
+    const { conversation_id } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetro obrigatório: conversation_id',
+        example: {
+          conversation_id: "uuid-da-conversa"
+        }
+      });
+    }
+
+    console.log(`👁️ [CONVERSATION] Marcando como lida:`, {
+      conversationId: conversation_id
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Buscar última mensagem não lida do contato
+    const { data: lastMessage } = await req.supabase
+      .from('messages')
+      .select('external_id, content')
+      .eq('conversation_id', conversation_id)
+      .eq('direction', 'inbound')
+      .not('external_id', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!lastMessage || !lastMessage.external_id) {
+      return res.json({
+        success: true,
+        message: 'Nenhuma mensagem para marcar como lida',
+        conversationId: conversation_id
+      });
+    }
+
+    // 3. Marcar como lida via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/chat/markMessageAsRead/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        readMessages: [{
+          remoteJid: conversation.external_id,
+          fromMe: false,
+          id: lastMessage.external_id
+        }]
+      })
+    });
+
+    if (!evolutionResponse.ok) {
+      const errorText = await evolutionResponse.text();
+      throw new Error(`Erro ao marcar como lida: ${errorText}`);
+    }
+
+    console.log(`✅ [CONVERSATION] Marcada como lida:`, {
+      conversationId: conversation_id,
+      messageId: lastMessage.external_id
+    });
+
+    res.json({
+      success: true,
+      message: 'Conversa marcada como lida',
+      data: {
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        lastMessageId: lastMessage.external_id,
+        markedAt: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro ao marcar como lida:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Obter dados da conversa
+router.get('/:conversation_id', async (req, res) => {
+  try {
+    const { conversation_id } = req.params;
+    const companyId = req.company.id;
+
+    console.log(`📋 [CONVERSATION] Buscando dados:`, {
+      conversationId: conversation_id
+    });
+
+    // Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // Buscar últimas mensagens
+    const { data: messages } = await req.supabase
+      .from('messages')
+      .select('id, content, direction, message_type, sent_at, sent_by_ai, metadata')
+      .eq('conversation_id', conversation_id)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    res.json({
+      success: true,
+      data: {
+        conversation: conversation,
+        contact: contact,
+        instance: {
+          id: instance.id,
+          name: instance.name,
+          phone_number: instance.phone_number,
+          status: instance.status
+        },
+        messages: messages?.reverse() || [],
+        messageCount: messages?.length || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro ao buscar dados:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Upload e envio de imagem direto via conversation_id
+router.post('/upload-image', upload.single('image'), async (req, res) => {
+  try {
+    const { conversation_id, caption, delay = 1200 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id e arquivo de imagem',
+        example: 'Use multipart/form-data com campo "image" e conversation_id no body'
+      });
+    }
+
+    console.log(`📸 [CONVERSATION] Upload de imagem:`, {
+      company: req.company.name,
+      conversationId: conversation_id,
+      filename: req.file.originalname,
+      size: `${Math.round(req.file.size / 1024)} KB`
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Upload para Supabase Storage
+    const fileName = `conversation_${conversation_id}_${Date.now()}_${req.file.originalname}`;
+    const filePath = `conversation-media/${companyId}/${fileName}`;
+
+    const { data: uploadData, error: uploadError } = await req.supabase.storage
+      .from('media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadError) {
+      throw new Error(`Erro no upload: ${uploadError.message}`);
+    }
+
+    // 3. Obter URL pública
+    const { data: { publicUrl } } = req.supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+
+    // 4. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: publicUrl,
+        caption: caption || '',
+        options: {
+          delay: delay,
+          presence: 'composing'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar imagem');
+    }
+
+    // 5. Preparar dados do attachment
+    const attachmentData = {
+      name: req.file.originalname,
+      url: publicUrl,
+      type: 'image',
+      mimetype: req.file.mimetype,
+      size: `${Math.round(req.file.size / 1024)} KB`,
+      caption: caption || null
+    };
+
+    // 6. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'image',
+      caption || 'Imagem enviada',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      false // sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Imagem enviada via upload:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: req.file.originalname,
+      storageUrl: publicUrl
+    });
+
+    res.json({
+      success: true,
+      message: 'Imagem enviada com sucesso via upload',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: req.file.originalname,
+        fileSize: attachmentData.size,
+        storageUrl: publicUrl,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'image'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no upload de imagem:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Upload e envio de áudio direto via conversation_id
+router.post('/upload-audio', upload.single('audio'), async (req, res) => {
+  try {
+    const { conversation_id, delay = 1500 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id e arquivo de áudio',
+        example: 'Use multipart/form-data com campo "audio" e conversation_id no body'
+      });
+    }
+
+    console.log(`🎵 [CONVERSATION] Upload de áudio:`, {
+      conversationId: conversation_id,
+      filename: req.file.originalname,
+      size: `${Math.round(req.file.size / 1024)} KB`
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Converter arquivo para base64
+    const audioBase64 = req.file.buffer.toString('base64');
+
+    // 3. Enviar via Evolution API (como áudio do WhatsApp)
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendWhatsAppAudio/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        audiobase64: audioBase64,
+        options: {
+          delay: delay,
+          presence: 'recording'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar áudio');
+    }
+
+    // 4. Preparar dados do attachment (salvar no storage para histórico)
+    const fileName = `conversation_${conversation_id}_${Date.now()}_${req.file.originalname}`;
+    const filePath = `conversation-media/${companyId}/${fileName}`;
+
+    const { data: uploadData } = await req.supabase.storage
+      .from('media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600'
+      });
+
+    const { data: { publicUrl } } = req.supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+
+    const attachmentData = {
+      name: req.file.originalname,
+      url: publicUrl,
+      type: 'audio',
+      mimetype: req.file.mimetype,
+      size: `${Math.round(req.file.size / 1024)} KB`
+    };
+
+    // 5. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'audio',
+      'Áudio enviado',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      false // sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Áudio enviado via upload:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: req.file.originalname
+    });
+
+    res.json({
+      success: true,
+      message: 'Áudio enviado com sucesso via upload',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: req.file.originalname,
+        fileSize: attachmentData.size,
+        storageUrl: publicUrl,
+        sentAt: new Date().toISOString(),
+        type: 'audio'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no upload de áudio:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Upload e envio de vídeo direto via conversation_id
+router.post('/upload-video', upload.single('video'), async (req, res) => {
+  try {
+    const { conversation_id, caption, delay = 2000 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id e arquivo de vídeo',
+        example: 'Use multipart/form-data com campo "video" e conversation_id no body'
+      });
+    }
+
+    console.log(`🎬 [CONVERSATION] Upload de vídeo:`, {
+      conversationId: conversation_id,
+      filename: req.file.originalname,
+      size: `${Math.round(req.file.size / 1024 / 1024)} MB`
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Upload para Supabase Storage
+    const fileName = `conversation_${conversation_id}_${Date.now()}_${req.file.originalname}`;
+    const filePath = `conversation-media/${companyId}/${fileName}`;
+
+    const { data: uploadData, error: uploadError } = await req.supabase.storage
+      .from('media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadError) {
+      throw new Error(`Erro no upload: ${uploadError.message}`);
+    }
+
+    // 3. Obter URL pública
+    const { data: { publicUrl } } = req.supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+
+    // 4. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: publicUrl,
+        caption: caption || '',
+        mediatype: 'video',
+        options: {
+          delay: delay,
+          presence: 'recording'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar vídeo');
+    }
+
+    // 5. Preparar dados do attachment
+    const attachmentData = {
+      name: req.file.originalname,
+      url: publicUrl,
+      type: 'video',
+      mimetype: req.file.mimetype,
+      size: `${Math.round(req.file.size / 1024 / 1024)} MB`,
+      caption: caption || null
+    };
+
+    // 6. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'video',
+      caption || 'Vídeo enviado',
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      false // sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Vídeo enviado via upload:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: req.file.originalname
+    });
+
+    res.json({
+      success: true,
+      message: 'Vídeo enviado com sucesso via upload',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: req.file.originalname,
+        fileSize: attachmentData.size,
+        storageUrl: publicUrl,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'video'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no upload de vídeo:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Upload e envio de documento direto via conversation_id
+router.post('/upload-document', upload.single('document'), async (req, res) => {
+  try {
+    const { conversation_id, caption, delay = 1500 } = req.body;
+    const companyId = req.company.id;
+
+    // Validações
+    if (!conversation_id || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id e arquivo do documento',
+        example: 'Use multipart/form-data com campo "document" e conversation_id no body'
+      });
+    }
+
+    console.log(`📄 [CONVERSATION] Upload de documento:`, {
+      conversationId: conversation_id,
+      filename: req.file.originalname,
+      size: `${Math.round(req.file.size / 1024)} KB`
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Upload para Supabase Storage
+    const fileName = `conversation_${conversation_id}_${Date.now()}_${req.file.originalname}`;
+    const filePath = `conversation-media/${companyId}/${fileName}`;
+
+    const { data: uploadData, error: uploadError } = await req.supabase.storage
+      .from('media')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600',
+        upsert: false
+      });
+
+    if (uploadError) {
+      throw new Error(`Erro no upload: ${uploadError.message}`);
+    }
+
+    // 3. Obter URL pública
+    const { data: { publicUrl } } = req.supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+
+    // 4. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: publicUrl,
+        caption: caption || '',
+        fileName: req.file.originalname,
+        mediatype: 'document',
+        options: {
+          delay: delay,
+          presence: 'composing'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar documento');
+    }
+
+    // 5. Preparar dados do attachment
+    const attachmentData = {
+      name: req.file.originalname,
+      url: publicUrl,
+      type: 'document',
+      mimetype: req.file.mimetype,
+      size: `${Math.round(req.file.size / 1024)} KB`,
+      caption: caption || null
+    };
+
+    // 6. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'document',
+      caption || `Documento: ${req.file.originalname}`,
+      attachmentData,
+      false,
+      evolutionResult.key?.id,
+      req.supabase,
+      false // sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Documento enviado via upload:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: req.file.originalname
+    });
+
+    res.json({
+      success: true,
+      message: 'Documento enviado com sucesso via upload',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: req.file.originalname,
+        fileSize: attachmentData.size,
+        storageUrl: publicUrl,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'document'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no upload de documento:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ✅ ROTA: Pausar ou atribuir agente na conversa
+router.post('/agent-control', async (req, res) => {
+  try {
+    const { conversation_id, action, ai_agent_id, assigned_to } = req.body;
+    const companyId = req.company.id;
+    const apiKeyData = req.apiKey;
+
+    // Validações
+    if (!conversation_id || !action) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id, action',
+        actions: {
+          'assign_ai': 'Atribuir agente IA (requer ai_agent_id)',
+          'pause_ai': 'Pausar agente IA',
+          'resume_ai': 'Reativar agente IA (mantém ai_agent_id atual)',
+          'assign_human': 'Atribuir agente humano (requer assigned_to)',
+          'unassign_human': 'Remover atribuição humana',
+          'remove_ai': 'Remover agente IA completamente'
+        },
+        example: {
+          conversation_id: "uuid-da-conversa",
+          action: "assign_ai",
+          ai_agent_id: "uuid-do-agente-ia"
+        }
+      });
+    }
+
+    const validActions = ['assign_ai', 'pause_ai', 'resume_ai', 'assign_human', 'unassign_human', 'remove_ai'];
+    if (!validActions.includes(action)) {
+      return res.status(400).json({
+        success: false,
+        error: `Ação inválida. Ações válidas: ${validActions.join(', ')}`
+      });
+    }
+
+    console.log(`🎛️ [AGENT-CONTROL] Ação solicitada:`, {
+      company: req.company.name,
+      apiKey: apiKeyData.name,
+      conversationId: conversation_id,
+      action: action,
+      aiAgentId: ai_agent_id,
+      assignedTo: assigned_to
+    });
+
+    // 1. Verificar se a conversa existe e pertence à empresa
+    const { data: conversation, error: convError } = await req.supabase
+      .from('conversations')
+      .select(`
+        id, company_id, ai_agent_id, ai_enabled, assigned_to, title,
+        contacts!inner(full_name, first_name, last_name)
+      `)
+      .eq('id', conversation_id)
+      .eq('company_id', companyId)
+      .single();
+
+    if (convError || !conversation) {
+      return res.status(404).json({
+        success: false,
+        error: 'Conversa não encontrada ou sem acesso',
+        details: convError?.message
+      });
+    }
+
+    // 2. Preparar dados para atualização baseado na ação
+    let updateData = {
+      updated_at: new Date().toISOString()
+    };
+    let actionDescription = '';
+    let validationError = null;
+
+    switch (action) {
+      case 'assign_ai':
+        if (!ai_agent_id) {
+          validationError = 'ai_agent_id é obrigatório para action "assign_ai"';
+          break;
+        }
+        
+        // Verificar se o agente existe e pertence à empresa
+        const { data: aiAgent, error: agentError } = await req.supabase
+          .from('ai_agents')
+          .select('id, name, company_id, status')
+          .eq('id', ai_agent_id)
+          .eq('company_id', companyId)
+          .single();
+
+        if (agentError || !aiAgent) {
+          validationError = 'Agente IA não encontrado ou sem acesso';
+          break;
+        }
+
+        if (aiAgent.status !== 'active') {
+          validationError = `Agente IA está inativo (status: ${aiAgent.status})`;
+          break;
+        }
+
+        updateData.ai_agent_id = ai_agent_id;
+        updateData.ai_enabled = true;
+        updateData.assigned_at = new Date().toISOString();
+        actionDescription = `Agente IA "${aiAgent.name}" atribuído e ativado`;
+        break;
+
+      case 'pause_ai':
+        updateData.ai_enabled = false;
+        actionDescription = 'Agente IA pausado (mantém atribuição)';
+        break;
+
+      case 'resume_ai':
+        if (!conversation.ai_agent_id) {
+          validationError = 'Nenhum agente IA atribuído para reativar';
+          break;
+        }
+        updateData.ai_enabled = true;
+        actionDescription = 'Agente IA reativado';
+        break;
+
+      case 'assign_human':
+        if (!assigned_to) {
+          validationError = 'assigned_to é obrigatório para action "assign_human"';
+          break;
+        }
+
+        // Verificar se o usuário existe e pertence à empresa
+        const { data: user, error: userError } = await req.supabase
+          .from('users')
+          .select('id, name, company_id')
+          .eq('id', assigned_to)
+          .eq('company_id', companyId)
+          .single();
+
+        if (userError || !user) {
+          validationError = 'Usuário não encontrado ou sem acesso';
+          break;
+        }
+
+        updateData.assigned_to = assigned_to;
+        updateData.assigned_at = new Date().toISOString();
+        updateData.ai_enabled = false; // Pausar IA quando atribuir humano
+        actionDescription = `Atribuído ao agente humano "${user.name}" (IA pausada)`;
+        break;
+
+      case 'unassign_human':
+        updateData.assigned_to = null;
+        updateData.assigned_at = null;
+        actionDescription = 'Atribuição humana removida';
+        break;
+
+      case 'remove_ai':
+        updateData.ai_agent_id = null;
+        updateData.ai_enabled = false;
+        actionDescription = 'Agente IA removido completamente';
+        break;
+
+      default:
+        validationError = `Ação "${action}" não implementada`;
+    }
+
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        error: validationError
+      });
+    }
+
+    // 3. Atualizar conversa
+    const { data: updatedConversation, error: updateError } = await req.supabase
+      .from('conversations')
       .update(updateData)
-      .eq('id', id)
-      .eq('company_id', company.id)
-      .select('*')
+      .eq('id', conversation_id)
+      .eq('company_id', companyId)
+      .select(`
+        id, ai_agent_id, ai_enabled, assigned_to, updated_at,
+        ai_agents(id, name),
+        users(id, name)
+      `)
       .single();
 
     if (updateError) {
-      console.error('❌ Erro ao atualizar appointment:', updateError);
-      return res.status(500).json({
-        error: 'Erro ao atualizar agendamento',
-        details: updateError.message
-      });
+      throw new Error(`Erro ao atualizar conversa: ${updateError.message}`);
     }
 
-    console.log(`✅ Appointment ${id} atualizado`);
-
-    // Verificar integração com Google Calendar
-    const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
-
-    let googleEventInfo = null;
-    if (googleIntegration.hasIntegration && existingAppointment.google_event_id) {
-      console.log('🔄 Tentando sincronizar mudanças com Google Calendar...');
-      
-      googleEventInfo = {
-        integration_status: 'sync_attempted',
-        google_event_id: existingAppointment.google_event_id,
-        message: 'Sincronização de mudanças com Google Calendar será processada'
-      };
+    // 4. Registrar atividade (opcional - para auditoria)
+    try {
+      await req.supabase
+        .from('ai_activities')
+        .insert({
+          company_id: companyId,
+          contact_id: conversation.contacts?.id,
+          type: 'agent_control',
+          title: `Controle de Agente: ${action}`,
+          description: actionDescription,
+          conversation_id: conversation_id,
+          ai_agent_id: action.includes('ai') ? (updateData.ai_agent_id || conversation.ai_agent_id) : null,
+          metadata: {
+            previous_state: {
+              ai_agent_id: conversation.ai_agent_id,
+              ai_enabled: conversation.ai_enabled,
+              assigned_to: conversation.assigned_to
+            },
+            new_state: {
+              ai_agent_id: updatedConversation.ai_agent_id,
+              ai_enabled: updatedConversation.ai_enabled,
+              assigned_to: updatedConversation.assigned_to
+            },
+            action: action,
+            performed_via: 'api',
+            api_key_used: apiKeyData.name
+          }
+        });
+    } catch (activityError) {
+      console.warn('⚠️ Falha ao registrar atividade:', activityError.message);
     }
 
-    return res.json({
+    // 5. Preparar resposta
+    const contactName = conversation.contacts?.full_name || 
+                       `${conversation.contacts?.first_name} ${conversation.contacts?.last_name}`.trim() || 
+                       'Cliente';
+
+    console.log(`✅ [AGENT-CONTROL] Ação executada com sucesso:`, {
+      conversationId: conversation_id,
+      action: action,
+      description: actionDescription,
+      contactName: contactName
+    });
+
+    res.json({
       success: true,
-      message: 'Agendamento atualizado com sucesso',
-      appointment: {
-        id: updatedAppointment.id,
-        title: updatedAppointment.title,
-        description: updatedAppointment.description,
-        start_time: updatedAppointment.start_time,
-        end_time: updatedAppointment.end_time,
-        location: updatedAppointment.location,
-        status: updatedAppointment.status,
-        attendees: updatedAppointment.attendees,
-        lead_id: updatedAppointment.lead_id,
-        google_event_id: updatedAppointment.google_event_id,
-        google_meet_link: updatedAppointment.google_meet_link,
-        updated_at: updatedAppointment.updated_at
-      },
-      google_calendar: googleEventInfo,
-      company: {
-        id: company.id,
-        name: company.name
+      message: actionDescription,
+      data: {
+        conversation_id: conversation_id,
+        contact_name: contactName,
+        conversation_title: conversation.title,
+        action_performed: action,
+        current_state: {
+          ai_agent: updatedConversation.ai_agents ? {
+            id: updatedConversation.ai_agents.id,
+            name: updatedConversation.ai_agents.name,
+            enabled: updatedConversation.ai_enabled
+          } : null,
+          human_agent: updatedConversation.users ? {
+            id: updatedConversation.users.id,
+            name: updatedConversation.users.name
+          } : null,
+          ai_enabled: updatedConversation.ai_enabled
+        },
+        timestamp: updatedConversation.updated_at
       }
     });
 
   } catch (error) {
-    console.error('❌ Erro em PUT /appointments/:id:', error);
-    return res.status(500).json({
-      error: 'Erro interno do servidor',
-      details: error.message
-    });
-  }
-});
-
-// ✅ 5. ENDPOINT ADICIONAL: Deletar agendamento
-router.delete('/appointments/:id', async (req, res) => {
-  try {
-    const { company } = req;
-    const { id } = req.params;
-
-    // Verificar se appointment existe
-    const { data: existingAppointment, error: findError } = await req.supabase
-      .from('appointments')
-      .select('*')
-      .eq('id', id)
-      .eq('company_id', company.id)
-      .single();
-
-    if (findError || !existingAppointment) {
-      return res.status(404).json({
-        error: 'Agendamento não encontrado',
-        message: 'O agendamento não existe ou não pertence à empresa'
-      });
-    }
-
-    // Deletar appointment
-    const { error: deleteError } = await req.supabase
-      .from('appointments')
-      .delete()
-      .eq('id', id)
-      .eq('company_id', company.id);
-
-    if (deleteError) {
-      console.error('❌ Erro ao deletar appointment:', deleteError);
-      return res.status(500).json({
-        error: 'Erro ao deletar agendamento',
-        details: deleteError.message
-      });
-    }
-
-    console.log(`✅ Appointment ${id} deletado`);
-
-    // Verificar integração com Google Calendar
-    let googleEventInfo = null;
-    if (existingAppointment.google_event_id) {
-      console.log('🔄 Tentando deletar evento do Google Calendar...');
-      
-      googleEventInfo = {
-        integration_status: 'deletion_attempted',
-        google_event_id: existingAppointment.google_event_id,
-        message: 'Deleção do evento no Google Calendar será processada'
-      };
-    }
-
-    return res.json({
-      success: true,
-      message: 'Agendamento deletado com sucesso',
-      deleted_appointment: {
-        id: existingAppointment.id,
-        title: existingAppointment.title,
-        start_time: existingAppointment.start_time,
-        end_time: existingAppointment.end_time
-      },
-      google_calendar: googleEventInfo,
-      company: {
-        id: company.id,
-        name: company.name
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Erro em DELETE /appointments/:id:', error);
-    return res.status(500).json({
+    console.error('❌ Erro no controle de agente:', error);
+    res.status(500).json({
+      success: false,
       error: 'Erro interno do servidor',
       details: error.message
     });
