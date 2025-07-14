@@ -1408,4 +1408,263 @@ router.post('/upload-document', upload.single('document'), async (req, res) => {
   }
 });
 
+// ✅ ROTA: Pausar ou atribuir agente na conversa
+router.post('/agent-control', async (req, res) => {
+  try {
+    const { conversation_id, action, ai_agent_id, assigned_to } = req.body;
+    const companyId = req.company.id;
+    const apiKeyData = req.apiKey;
+
+    // Validações
+    if (!conversation_id || !action) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id, action',
+        actions: {
+          'assign_ai': 'Atribuir agente IA (requer ai_agent_id)',
+          'pause_ai': 'Pausar agente IA',
+          'resume_ai': 'Reativar agente IA (mantém ai_agent_id atual)',
+          'assign_human': 'Atribuir agente humano (requer assigned_to)',
+          'unassign_human': 'Remover atribuição humana',
+          'remove_ai': 'Remover agente IA completamente'
+        },
+        example: {
+          conversation_id: "uuid-da-conversa",
+          action: "assign_ai",
+          ai_agent_id: "uuid-do-agente-ia"
+        }
+      });
+    }
+
+    const validActions = ['assign_ai', 'pause_ai', 'resume_ai', 'assign_human', 'unassign_human', 'remove_ai'];
+    if (!validActions.includes(action)) {
+      return res.status(400).json({
+        success: false,
+        error: `Ação inválida. Ações válidas: ${validActions.join(', ')}`
+      });
+    }
+
+    console.log(`🎛️ [AGENT-CONTROL] Ação solicitada:`, {
+      company: req.company.name,
+      apiKey: apiKeyData.name,
+      conversationId: conversation_id,
+      action: action,
+      aiAgentId: ai_agent_id,
+      assignedTo: assigned_to
+    });
+
+    // 1. Verificar se a conversa existe e pertence à empresa
+    const { data: conversation, error: convError } = await req.supabase
+      .from('conversations')
+      .select(`
+        id, company_id, ai_agent_id, ai_enabled, assigned_to, title,
+        contacts!inner(full_name, first_name, last_name)
+      `)
+      .eq('id', conversation_id)
+      .eq('company_id', companyId)
+      .single();
+
+    if (convError || !conversation) {
+      return res.status(404).json({
+        success: false,
+        error: 'Conversa não encontrada ou sem acesso',
+        details: convError?.message
+      });
+    }
+
+    // 2. Preparar dados para atualização baseado na ação
+    let updateData = {
+      updated_at: new Date().toISOString()
+    };
+    let actionDescription = '';
+    let validationError = null;
+
+    switch (action) {
+      case 'assign_ai':
+        if (!ai_agent_id) {
+          validationError = 'ai_agent_id é obrigatório para action "assign_ai"';
+          break;
+        }
+        
+        // Verificar se o agente existe e pertence à empresa
+        const { data: aiAgent, error: agentError } = await req.supabase
+          .from('ai_agents')
+          .select('id, name, company_id, status')
+          .eq('id', ai_agent_id)
+          .eq('company_id', companyId)
+          .single();
+
+        if (agentError || !aiAgent) {
+          validationError = 'Agente IA não encontrado ou sem acesso';
+          break;
+        }
+
+        if (aiAgent.status !== 'active') {
+          validationError = `Agente IA está inativo (status: ${aiAgent.status})`;
+          break;
+        }
+
+        updateData.ai_agent_id = ai_agent_id;
+        updateData.ai_enabled = true;
+        updateData.assigned_at = new Date().toISOString();
+        actionDescription = `Agente IA "${aiAgent.name}" atribuído e ativado`;
+        break;
+
+      case 'pause_ai':
+        updateData.ai_enabled = false;
+        actionDescription = 'Agente IA pausado (mantém atribuição)';
+        break;
+
+      case 'resume_ai':
+        if (!conversation.ai_agent_id) {
+          validationError = 'Nenhum agente IA atribuído para reativar';
+          break;
+        }
+        updateData.ai_enabled = true;
+        actionDescription = 'Agente IA reativado';
+        break;
+
+      case 'assign_human':
+        if (!assigned_to) {
+          validationError = 'assigned_to é obrigatório para action "assign_human"';
+          break;
+        }
+
+        // Verificar se o usuário existe e pertence à empresa
+        const { data: user, error: userError } = await req.supabase
+          .from('users')
+          .select('id, name, company_id')
+          .eq('id', assigned_to)
+          .eq('company_id', companyId)
+          .single();
+
+        if (userError || !user) {
+          validationError = 'Usuário não encontrado ou sem acesso';
+          break;
+        }
+
+        updateData.assigned_to = assigned_to;
+        updateData.assigned_at = new Date().toISOString();
+        updateData.ai_enabled = false; // Pausar IA quando atribuir humano
+        actionDescription = `Atribuído ao agente humano "${user.name}" (IA pausada)`;
+        break;
+
+      case 'unassign_human':
+        updateData.assigned_to = null;
+        updateData.assigned_at = null;
+        actionDescription = 'Atribuição humana removida';
+        break;
+
+      case 'remove_ai':
+        updateData.ai_agent_id = null;
+        updateData.ai_enabled = false;
+        actionDescription = 'Agente IA removido completamente';
+        break;
+
+      default:
+        validationError = `Ação "${action}" não implementada`;
+    }
+
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        error: validationError
+      });
+    }
+
+    // 3. Atualizar conversa
+    const { data: updatedConversation, error: updateError } = await req.supabase
+      .from('conversations')
+      .update(updateData)
+      .eq('id', conversation_id)
+      .eq('company_id', companyId)
+      .select(`
+        id, ai_agent_id, ai_enabled, assigned_to, updated_at,
+        ai_agents(id, name),
+        users(id, name)
+      `)
+      .single();
+
+    if (updateError) {
+      throw new Error(`Erro ao atualizar conversa: ${updateError.message}`);
+    }
+
+    // 4. Registrar atividade (opcional - para auditoria)
+    try {
+      await req.supabase
+        .from('ai_activities')
+        .insert({
+          company_id: companyId,
+          contact_id: conversation.contacts?.id,
+          type: 'agent_control',
+          title: `Controle de Agente: ${action}`,
+          description: actionDescription,
+          conversation_id: conversation_id,
+          ai_agent_id: action.includes('ai') ? (updateData.ai_agent_id || conversation.ai_agent_id) : null,
+          metadata: {
+            previous_state: {
+              ai_agent_id: conversation.ai_agent_id,
+              ai_enabled: conversation.ai_enabled,
+              assigned_to: conversation.assigned_to
+            },
+            new_state: {
+              ai_agent_id: updatedConversation.ai_agent_id,
+              ai_enabled: updatedConversation.ai_enabled,
+              assigned_to: updatedConversation.assigned_to
+            },
+            action: action,
+            performed_via: 'api',
+            api_key_used: apiKeyData.name
+          }
+        });
+    } catch (activityError) {
+      console.warn('⚠️ Falha ao registrar atividade:', activityError.message);
+    }
+
+    // 5. Preparar resposta
+    const contactName = conversation.contacts?.full_name || 
+                       `${conversation.contacts?.first_name} ${conversation.contacts?.last_name}`.trim() || 
+                       'Cliente';
+
+    console.log(`✅ [AGENT-CONTROL] Ação executada com sucesso:`, {
+      conversationId: conversation_id,
+      action: action,
+      description: actionDescription,
+      contactName: contactName
+    });
+
+    res.json({
+      success: true,
+      message: actionDescription,
+      data: {
+        conversation_id: conversation_id,
+        contact_name: contactName,
+        conversation_title: conversation.title,
+        action_performed: action,
+        current_state: {
+          ai_agent: updatedConversation.ai_agents ? {
+            id: updatedConversation.ai_agents.id,
+            name: updatedConversation.ai_agents.name,
+            enabled: updatedConversation.ai_enabled
+          } : null,
+          human_agent: updatedConversation.users ? {
+            id: updatedConversation.users.id,
+            name: updatedConversation.users.name
+          } : null,
+          ai_enabled: updatedConversation.ai_enabled
+        },
+        timestamp: updatedConversation.updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro no controle de agente:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
 module.exports = router; 
