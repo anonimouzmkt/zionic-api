@@ -211,6 +211,9 @@ router.post('/schedule', async (req, res) => {
       all_day = false
     } = req.body;
 
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
     // Validações obrigatórias
     if (!title || !start_time || !end_time) {
       return res.status(400).json({
@@ -346,6 +349,7 @@ router.post('/schedule', async (req, res) => {
         created_at: appointment.created_at
       },
       google_calendar: googleEventInfo,
+      timezone: companyTimezone,
       company: {
         id: company.id,
         name: company.name
@@ -375,6 +379,9 @@ router.get('/appointments', async (req, res) => {
       page = 1
     } = req.query;
 
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
     let query = req.supabase
       .from('appointments')
       .select(`
@@ -395,8 +402,8 @@ router.get('/appointments', async (req, res) => {
           message: 'Use formato YYYY-MM-DD'
         });
       }
-      const startOfDay = formatToISO(date, '00:00');
-      const endOfDay = formatToISO(date, '23:59');
+      const startOfDay = formatToISO(date, '00:00', companyTimezone);
+      const endOfDay = formatToISO(date, '23:59', companyTimezone);
       query = query.gte('start_time', startOfDay).lte('start_time', endOfDay);
     } else if (start_date && end_date) {
       if (!isValidDate(start_date) || !isValidDate(end_date)) {
@@ -472,6 +479,7 @@ router.get('/appointments', async (req, res) => {
         status,
         lead_id
       },
+      timezone: companyTimezone,
       company: {
         id: company.id,
         name: company.name
@@ -503,6 +511,9 @@ router.put('/appointments/:id', async (req, res) => {
       create_meet,
       all_day
     } = req.body;
+
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
 
     // Verificar se appointment existe
     const { data: existingAppointment, error: findError } = await req.supabase
@@ -642,6 +653,7 @@ router.put('/appointments/:id', async (req, res) => {
         updated_at: updatedAppointment.updated_at
       },
       google_calendar: googleEventInfo,
+      timezone: companyTimezone,
       company: {
         id: company.id,
         name: company.name
@@ -717,6 +729,7 @@ router.delete('/appointments/:id', async (req, res) => {
         end_time: existingAppointment.end_time
       },
       google_calendar: googleEventInfo,
+      timezone: await getCompanyTimezone(company.id, req.supabase),
       company: {
         id: company.id,
         name: company.name
