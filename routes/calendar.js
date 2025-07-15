@@ -7,12 +7,83 @@ function isValidDate(dateString) {
   return !isNaN(date.getTime());
 }
 
-// ✅ HELPER: Formatar data para ISO string
-function formatToISO(dateString, time = null) {
-  if (time) {
-    return new Date(`${dateString}T${time}:00.000Z`).toISOString();
+// ✅ HELPER: Formatar data para ISO string considerando timezone
+function formatToISO(dateString, time = null, timezone = 'America/Sao_Paulo') {
+  try {
+    if (time) {
+      // Criar data no timezone específico
+      const localDateTime = `${dateString}T${time}:00`;
+      const date = new Date(localDateTime);
+      
+      // Ajustar para o timezone especificado
+      const offsetMs = getTimezoneOffset(timezone, date);
+      const adjustedDate = new Date(date.getTime() - offsetMs);
+      
+      return adjustedDate.toISOString();
+    }
+    
+    const date = new Date(dateString);
+    const offsetMs = getTimezoneOffset(timezone, date);
+    const adjustedDate = new Date(date.getTime() - offsetMs);
+    
+    return adjustedDate.toISOString();
+  } catch (error) {
+    console.warn('⚠️ Erro ao formatar data com timezone, usando formato padrão:', error);
+    if (time) {
+      return new Date(`${dateString}T${time}:00.000Z`).toISOString();
+    }
+    return new Date(dateString).toISOString();
   }
-  return new Date(dateString).toISOString();
+}
+
+// ✅ HELPER: Obter offset do timezone em milissegundos
+function getTimezoneOffset(timezone, date = new Date()) {
+  try {
+    // Criar formatador para o timezone
+    const utc = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' }));
+    const local = new Date(date.toLocaleString('en-US', { timeZone: timezone }));
+    
+    // Calcular diferença
+    return utc.getTime() - local.getTime();
+  } catch (error) {
+    console.warn('⚠️ Erro ao calcular offset do timezone:', error);
+    return 0; // Fallback para UTC
+  }
+}
+
+// ✅ HELPER: Obter timezone da empresa
+async function getCompanyTimezone(companyId, supabase) {
+  try {
+    // Primeiro, tentar obter o timezone das configurações da empresa
+    const { data: companySettings, error: settingsError } = await supabase
+      .from('company_settings')
+      .select('timezone')
+      .eq('company_id', companyId)
+      .single();
+
+    if (!settingsError && companySettings?.timezone) {
+      return companySettings.timezone;
+    }
+
+    // Se não encontrar nas configurações da empresa, buscar do primeiro usuário da empresa
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('timezone')
+      .eq('company_id', companyId)
+      .not('timezone', 'is', null)
+      .limit(1)
+      .single();
+
+    if (!userError && userData?.timezone) {
+      return userData.timezone;
+    }
+
+    // Fallback para timezone padrão do Brasil
+    return 'America/Sao_Paulo';
+  } catch (error) {
+    console.warn('⚠️ Erro ao obter timezone da empresa, usando padrão:', error);
+    return 'America/Sao_Paulo';
+  }
 }
 
 // ✅ HELPER: Verificar se empresa tem integração ativa do Google Calendar
@@ -59,9 +130,12 @@ router.get('/availability/:date', async (req, res) => {
       });
     }
 
-    // Definir período do dia
-    const startDateTime = formatToISO(date, start_hour);
-    const endDateTime = formatToISO(date, end_hour);
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
+    // Definir período do dia considerando timezone da empresa
+    const startDateTime = formatToISO(date, start_hour, companyTimezone);
+    const endDateTime = formatToISO(date, end_hour, companyTimezone);
 
     console.log(`🔍 Verificando disponibilidade para ${date} entre ${start_hour} e ${end_hour}`);
 
@@ -105,6 +179,7 @@ router.get('/availability/:date', async (req, res) => {
         start: startDateTime,
         end: endDateTime
       },
+      timezone: companyTimezone,
       company: {
         id: company.id,
         name: company.name
