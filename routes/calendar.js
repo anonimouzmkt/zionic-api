@@ -88,30 +88,37 @@ async function getCompanyTimezone(companyId, supabase) {
 
 // ✅ HELPER: Verificar se empresa tem integração ativa do Google Calendar
 async function checkGoogleCalendarIntegration(companyId, supabase) {
+  // ✅ NOVO: Buscar todas as integrações ativas (múltiplas agendas)
   const { data, error } = await supabase
     .from('google_calendar_integrations')
-    .select('id, status, access_token, is_active')
+    .select('id, status, access_token, is_active, calendar_id, calendar_name, user_id')
     .eq('company_id', companyId)
     .eq('is_active', true)
-    .single();
+    .eq('status', 'connected');
 
-  if (error || !data) {
+  if (error || !data || data.length === 0) {
     return {
       hasIntegration: false,
-      error: 'Integração do Google Calendar não encontrada'
+      error: 'Nenhuma integração ativa do Google Calendar encontrada',
+      integrations: []
     };
   }
 
-  if (data.status !== 'connected' || !data.access_token) {
+  // Filtrar apenas integrações com access_token válido
+  const validIntegrations = data.filter(integration => integration.access_token);
+
+  if (validIntegrations.length === 0) {
     return {
       hasIntegration: false,
-      error: 'Google Calendar não está conectado'
+      error: 'Nenhuma integração conectada do Google Calendar encontrada',
+      integrations: []
     };
   }
 
   return {
     hasIntegration: true,
-    integration: data
+    integrations: validIntegrations,
+    primary: validIntegrations[0] // Primeira integração como primária para compatibilidade
   };
 }
 
@@ -318,18 +325,22 @@ router.post('/schedule', async (req, res) => {
 
     console.log(`✅ Appointment criado: ${appointment.id}`);
 
-    // Verificar integração com Google Calendar
+    // ✅ NOVO: Verificar múltiplas integrações com Google Calendar
     const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
 
     let googleEventInfo = null;
     if (googleIntegration.hasIntegration) {
-      console.log('🔄 Tentando sincronizar com Google Calendar...');
+      console.log(`🔄 Tentando sincronizar com ${googleIntegration.integrations.length} agenda(s) do Google Calendar...`);
       
-      // Aqui seria feita a integração com Google Calendar
-      // Por enquanto, apenas marcar que foi tentado
+      // Para agendamentos via API, usar a primeira integração (primária)
+      // Em versões futuras, permitir especificar qual integração usar
+      const primaryIntegration = googleIntegration.primary;
+      
       googleEventInfo = {
         integration_status: 'attempted',
-        message: 'Sincronização com Google Calendar será processada'
+        message: `Sincronização com ${googleIntegration.integrations.length} agenda(s) do Google Calendar será processada`,
+        primary_calendar: primaryIntegration.calendar_name || primaryIntegration.calendar_id,
+        total_integrations: googleIntegration.integrations.length
       };
     }
 
@@ -621,17 +632,18 @@ router.put('/appointments/:id', async (req, res) => {
 
     console.log(`✅ Appointment ${id} atualizado`);
 
-    // Verificar integração com Google Calendar
+    // ✅ NOVO: Verificar múltiplas integrações com Google Calendar
     const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
 
     let googleEventInfo = null;
     if (googleIntegration.hasIntegration && existingAppointment.google_event_id) {
-      console.log('🔄 Tentando sincronizar mudanças com Google Calendar...');
+      console.log(`🔄 Tentando sincronizar mudanças com ${googleIntegration.integrations.length} agenda(s) do Google Calendar...`);
       
       googleEventInfo = {
         integration_status: 'sync_attempted',
         google_event_id: existingAppointment.google_event_id,
-        message: 'Sincronização de mudanças com Google Calendar será processada'
+        message: `Sincronização de mudanças com ${googleIntegration.integrations.length} agenda(s) do Google Calendar será processada`,
+        total_integrations: googleIntegration.integrations.length
       };
     }
 
@@ -707,15 +719,21 @@ router.delete('/appointments/:id', async (req, res) => {
 
     console.log(`✅ Appointment ${id} deletado`);
 
-    // Verificar integração com Google Calendar
+    // ✅ NOVO: Verificar múltiplas integrações para deleção
     let googleEventInfo = null;
     if (existingAppointment.google_event_id) {
       console.log('🔄 Tentando deletar evento do Google Calendar...');
       
+      // Verificar se ainda há integrações ativas
+      const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
+      
       googleEventInfo = {
         integration_status: 'deletion_attempted',
         google_event_id: existingAppointment.google_event_id,
-        message: 'Deleção do evento no Google Calendar será processada'
+        message: googleIntegration.hasIntegration 
+          ? `Deleção do evento em ${googleIntegration.integrations.length} agenda(s) do Google Calendar será processada`
+          : 'Deleção no Google Calendar não será processada (nenhuma integração ativa)',
+        total_integrations: googleIntegration.hasIntegration ? googleIntegration.integrations.length : 0
       };
     }
 
@@ -738,6 +756,132 @@ router.delete('/appointments/:id', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Erro em DELETE /appointments/:id:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+// ✅ 6. ENDPOINT NOVO: Listar Integrações do Google Calendar
+router.get('/integrations', async (req, res) => {
+  try {
+    const { company } = req;
+
+    // Obter todas as integrações do Google Calendar da empresa
+    const { data: integrations, error } = await req.supabase
+      .from('google_calendar_integrations')
+      .select(`
+        id, calendar_id, calendar_name, status, is_active,
+        timezone, auto_create_meet, sync_enabled, 
+        created_at, updated_at, last_sync_at,
+        users!google_calendar_integrations_user_id_fkey(
+          id, first_name, last_name, full_name, email
+        )
+      `)
+      .eq('company_id', company.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Erro ao buscar integrações:', error);
+      return res.status(500).json({
+        error: 'Erro interno do servidor',
+        details: error.message
+      });
+    }
+
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
+    // Contar integrações por status
+    const statusCount = {
+      connected: integrations.filter(i => i.status === 'connected' && i.is_active).length,
+      disconnected: integrations.filter(i => i.status === 'disconnected').length,
+      error: integrations.filter(i => i.status === 'error').length,
+      inactive: integrations.filter(i => !i.is_active).length,
+      total: integrations.length
+    };
+
+    // Formatar resposta
+    const formattedIntegrations = integrations.map(integration => ({
+      id: integration.id,
+      calendar_id: integration.calendar_id,
+      calendar_name: integration.calendar_name || `Agenda ${integration.calendar_id}`,
+      status: integration.status,
+      is_active: integration.is_active,
+      timezone: integration.timezone || companyTimezone,
+      auto_create_meet: integration.auto_create_meet,
+      sync_enabled: integration.sync_enabled,
+      user: integration.users ? {
+        id: integration.users.id,
+        name: integration.users.full_name || `${integration.users.first_name} ${integration.users.last_name}`.trim(),
+        email: integration.users.email
+      } : null,
+      created_at: integration.created_at,
+      updated_at: integration.updated_at,
+      last_sync_at: integration.last_sync_at
+    }));
+
+    return res.json({
+      success: true,
+      message: `${statusCount.total} integração(ões) encontrada(s)`,
+      data: {
+        integrations: formattedIntegrations,
+        summary: {
+          total_integrations: statusCount.total,
+          active_integrations: statusCount.connected,
+          status_breakdown: statusCount
+        },
+        company: {
+          id: company.id,
+          name: company.name,
+          timezone: companyTimezone
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro em GET /integrations:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+// ✅ 7. ENDPOINT NOVO: Verificar Status de Múltiplas Integrações
+router.get('/integrations/status', async (req, res) => {
+  try {
+    const { company } = req;
+
+    const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
+    return res.json({
+      success: true,
+      data: {
+        has_integration: googleIntegration.hasIntegration,
+        total_active: googleIntegration.hasIntegration ? googleIntegration.integrations.length : 0,
+        primary_calendar: googleIntegration.hasIntegration ? 
+          (googleIntegration.primary.calendar_name || googleIntegration.primary.calendar_id) : null,
+        integrations_summary: googleIntegration.hasIntegration ? 
+          googleIntegration.integrations.map(integration => ({
+            id: integration.id,
+            calendar_name: integration.calendar_name || integration.calendar_id,
+            status: integration.status,
+            user_id: integration.user_id
+          })) : [],
+        error: googleIntegration.error || null,
+        timezone: companyTimezone,
+        company: {
+          id: company.id,
+          name: company.name
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro em GET /integrations/status:', error);
     return res.status(500).json({
       error: 'Erro interno do servidor',
       details: error.message
