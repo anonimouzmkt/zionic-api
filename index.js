@@ -172,8 +172,16 @@ app.get('/', (req, res) => {
       },
       conversation: {
         send_text: 'POST /api/conversation/send-text - Enviar mensagem via conversa',
-        send_media: 'POST /api/conversation/send-media - Enviar mídia via conversa',
-        send_document: 'POST /api/conversation/send-document - Enviar documento via conversa',
+        send_image: 'POST /api/conversation/send-image - Enviar imagem via URL',
+        send_image_base64: 'POST /api/conversation/send-image-base64 - Enviar imagem via base64',
+        send_audio: 'POST /api/conversation/send-audio - Enviar áudio via URL',
+        send_video: 'POST /api/conversation/send-video - Enviar vídeo via URL',
+        send_document: 'POST /api/conversation/send-document - Enviar documento via URL',
+        upload_image: 'POST /api/conversation/upload-image - Upload e envio de imagem',
+        upload_audio: 'POST /api/conversation/upload-audio - Upload e envio de áudio',
+        upload_video: 'POST /api/conversation/upload-video - Upload e envio de vídeo',
+        upload_document: 'POST /api/conversation/upload-document - Upload e envio de documento',
+        mark_read: 'POST /api/conversation/mark-read - Marcar mensagem como lida',
         agent_control: 'POST /api/conversation/agent-control - Pausar ou atribuir agentes'
       },
       calendar: {
@@ -331,6 +339,32 @@ app.get('/', (req, res) => {
         get_column_leads: {
           url: 'GET /api/columns/column-uuid/leads',
           headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        }
+      },
+      conversation_media: {
+        send_image_url: {
+          url: 'POST /api/conversation/send-image',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            conversation_id: 'uuid-da-conversa',
+            image_url: 'https://exemplo.com/imagem.jpg',
+            caption: 'Legenda da imagem'
+          }
+        },
+        send_image_base64: {
+          url: 'POST /api/conversation/send-image-base64',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            conversation_id: 'uuid-da-conversa',
+            image_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
+            caption: 'Imagem enviada via base64',
+            filename: 'minha-imagem.jpg'
+          }
+        },
+        upload_image: {
+          url: 'POST /api/conversation/upload-image',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: 'multipart/form-data com campos: conversation_id, image (arquivo), caption'
         }
       },
       credits: {
