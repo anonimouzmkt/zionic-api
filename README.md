@@ -33,7 +33,7 @@ PORT=3001
 npm start
 ```
 
-A API estará disponível em `http://localhost:3001`
+A API estará disponível em `https://api.zionic.app`
 
 ## 🔐 Autenticação
 
@@ -47,7 +47,7 @@ Authorization: Bearer zio_your_api_key_here
 
 ```bash
 curl -H "Authorization: Bearer zio_your_api_key" \
-     http://localhost:3001/api/auth/test
+     https://api.zionic.app/api/auth/test
 ```
 
 ## 📋 Endpoints Disponíveis
@@ -130,7 +130,7 @@ A API Zionic agora inclui um sistema completo de gerenciamento de créditos para
 #### Atribuir Agente IA
 
 ```bash
-curl -X POST http://localhost:3001/api/conversation/agent-control \
+curl -X POST https://api.zionic.app/api/conversation/agent-control \
   -H "Authorization: Bearer zio_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -143,7 +143,7 @@ curl -X POST http://localhost:3001/api/conversation/agent-control \
 #### Pausar Agente IA
 
 ```bash
-curl -X POST http://localhost:3001/api/conversation/agent-control \
+curl -X POST https://api.zionic.app/api/conversation/agent-control \
   -H "Authorization: Bearer zio_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -155,7 +155,7 @@ curl -X POST http://localhost:3001/api/conversation/agent-control \
 #### Atribuir Agente Humano
 
 ```bash
-curl -X POST http://localhost:3001/api/conversation/agent-control \
+curl -X POST https://api.zionic.app/api/conversation/agent-control \
   -H "Authorization: Bearer zio_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -198,7 +198,7 @@ curl -X POST http://localhost:3001/api/conversation/agent-control \
 const fetch = require('node-fetch');
 
 class ZionicAPI {
-  constructor(apiKey, baseUrl = 'http://localhost:3001') {
+  constructor(apiKey, baseUrl = 'https://api.zionic.app') {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
   }
@@ -322,7 +322,7 @@ import requests
 import json
 
 class ZionicAPI:
-    def __init__(self, api_key, base_url="http://localhost:3001"):
+    def __init__(self, api_key, base_url="https://api.zionic.app"):
         self.api_key = api_key
         self.base_url = base_url
         self.headers = {
@@ -441,13 +441,13 @@ node test_agent_control.js
 ```bash
 # 1. Testar autenticação
 curl -H "Authorization: Bearer zio_your_api_key" \
-     http://localhost:3001/api/auth/test
+     https://api.zionic.app/api/auth/test
 
 # 2. Ver documentação completa
-curl http://localhost:3001/
+curl https://api.zionic.app/
 
 # 3. Testar controle de agente
-curl -X POST http://localhost:3001/api/conversation/agent-control \
+curl -X POST https://api.zionic.app/api/conversation/agent-control \
   -H "Authorization: Bearer zio_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{"conversation_id": "test", "action": "pause_ai"}'
@@ -458,7 +458,7 @@ curl -X POST http://localhost:3001/api/conversation/agent-control \
 #### Consumir Créditos
 
 ```bash
-curl -X POST http://localhost:3001/api/credits/consume \
+curl -X POST https://api.zionic.app/api/credits/consume \
   -H "Authorization: Bearer zio_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -476,14 +476,14 @@ curl -X POST http://localhost:3001/api/credits/consume \
 
 ```bash
 curl -H "Authorization: Bearer zio_your_api_key" \
-     http://localhost:3001/api/credits/balance
+     https://api.zionic.app/api/credits/balance
 ```
 
 #### Obter Estatísticas
 
 ```bash
 curl -H "Authorization: Bearer zio_your_api_key" \
-     http://localhost:3001/api/credits/usage-stats
+     https://api.zionic.app/api/credits/usage-stats
 ```
 
 #### Resposta de Consumo de Créditos
@@ -623,7 +623,7 @@ zionic-api/
 
 - **[AGENT_CONTROL_API.md](./AGENT_CONTROL_API.md)** - Documentação completa do controle de agentes
 - **[CREDITS_API.md](./CREDITS_API.md)** - 🆕 Documentação completa da API de créditos
-- **[API Endpoints](http://localhost:3001/)** - Documentação interativa (quando a API estiver rodando)
+- **[API Endpoints](https://api.zionic.app/)** - Documentação interativa da API
 
 ## 🛡️ Segurança
 
@@ -648,7 +648,7 @@ zionic-api/
 ```bash
 # Verificar se a API key está correta
 curl -H "Authorization: Bearer zio_your_actual_key" \
-     http://localhost:3001/api/auth/test
+     https://api.zionic.app/api/auth/test
 ```
 
 ### Erro 404 - Conversation Not Found
@@ -656,7 +656,7 @@ curl -H "Authorization: Bearer zio_your_actual_key" \
 ```bash
 # Verificar se o conversation_id existe e pertence à sua empresa
 curl -H "Authorization: Bearer zio_your_key" \
-     http://localhost:3001/api/conversation/agent-control \
+     https://api.zionic.app/api/conversation/agent-control \
      -d '{"conversation_id": "correct-uuid", "action": "pause_ai"}'
 ```
 
@@ -664,12 +664,12 @@ curl -H "Authorization: Bearer zio_your_key" \
 
 ```bash
 # Verificar se a API está rodando
-curl http://localhost:3001/health
+curl https://api.zionic.app/health
 ```
 
 ## 📞 Suporte
 
-- **Documentação**: [http://localhost:3001/](http://localhost:3001/) (API rodando)
+- **Documentação**: [https://api.zionic.app/](https://api.zionic.app/) (API de produção)
 - **Logs**: Verifique os logs do servidor para detalhes de erro
 - **Testes**: Execute `node test_agent_control.js` para diagnosticar problemas
 
