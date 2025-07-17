@@ -143,6 +143,7 @@ const calendarRoutes = require('./routes/calendar');
 const leadsRoutes = require('./routes/leads');
 const pipelinesRoutes = require('./routes/pipelines');
 const columnsRoutes = require('./routes/columns');
+const creditsRoutes = require('./routes/credits');
 
 // Rota de teste
 app.get('/', (req, res) => {
@@ -156,6 +157,7 @@ app.get('/', (req, res) => {
       leads: '/api/leads',
       pipelines: '/api/pipelines',
       columns: '/api/columns',
+      credits: '/api/credits',
       auth_test: '/api/auth/test'
     },
     available_routes: {
@@ -202,6 +204,13 @@ app.get('/', (req, res) => {
         list: 'GET /api/columns - Listar todas as colunas',
         get: 'GET /api/columns/:id - Obter coluna específica',
         leads: 'GET /api/columns/:id/leads - Listar leads de uma coluna'
+      },
+      credits: {
+        consume: 'POST /api/credits/consume - Consumir créditos da empresa',
+        add: 'POST /api/credits/add - Adicionar créditos à empresa',
+        balance: 'GET /api/credits/balance - Obter saldo atual de créditos',
+        usage_stats: 'GET /api/credits/usage-stats - Obter estatísticas de uso',
+        transactions: 'GET /api/credits/transactions - Listar transações de créditos'
       }
     },
     agent_control_actions: {
@@ -323,6 +332,42 @@ app.get('/', (req, res) => {
           url: 'GET /api/columns/column-uuid/leads',
           headers: { 'Authorization': 'Bearer zio_your_api_key' }
         }
+      },
+      credits: {
+        consume_credits: {
+          url: 'POST /api/credits/consume',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            credits_to_consume: 1500,
+            service_type: 'openai_chat',
+            feature: 'Chat AI',
+            description: 'Conversa com GPT-4 - 1000 prompt + 500 completion tokens',
+            tokens_used: 1500,
+            model_used: 'gpt-4',
+            conversation_id: 'uuid-da-conversa'
+          }
+        },
+        add_credits: {
+          url: 'POST /api/credits/add',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            credits_to_add: 100000,
+            description: 'Recarga de créditos - Pacote 100K',
+            reference: 'stripe_payment_intent_123'
+          }
+        },
+        get_balance: {
+          url: 'GET /api/credits/balance',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        },
+        get_usage_stats: {
+          url: 'GET /api/credits/usage-stats',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        },
+        list_transactions: {
+          url: 'GET /api/credits/transactions?limit=20&type=usage',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        }
       }
     }
   });
@@ -358,6 +403,7 @@ app.use('/api/calendar', authenticateApiKey, calendarRoutes);
 app.use('/api/leads', authenticateApiKey, leadsRoutes);
 app.use('/api/pipelines', authenticateApiKey, pipelinesRoutes);
 app.use('/api/columns', authenticateApiKey, columnsRoutes);
+app.use('/api/credits', authenticateApiKey, creditsRoutes);
 
 app.listen(port, () => {
   console.log(`🚀 API rodando na porta ${port}`);
