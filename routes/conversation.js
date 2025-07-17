@@ -242,7 +242,7 @@ router.post('/send-text', async (req, res) => {
       'text',
       message,
       null,
-      false,
+      sent_via_agent, // ✅ CORREÇÃO: sent_via_agent = true marca como IA para trigger follow-up
       evolutionResult.key?.id,
       req.supabase,
       sent_via_agent // ✅ NOVO: Passar flag para salvar no metadata
@@ -357,10 +357,10 @@ router.post('/send-image', async (req, res) => {
       'image',
       caption || 'Imagem enviada',
       attachmentData,
-      false,
+      sent_via_agent, // ✅ CORREÇÃO: sent_via_agent = true marca como IA
       evolutionResult.key?.id,
       req.supabase,
-      false // sent_via_agent
+      sent_via_agent // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Imagem enviada:`, {
@@ -397,7 +397,7 @@ router.post('/send-image', async (req, res) => {
 // ✅ ROTA: Enviar áudio via conversation_id
 router.post('/send-audio', async (req, res) => {
   try {
-    const { conversation_id, audio_url, delay = 1500 } = req.body;
+    const { conversation_id, audio_url, delay = 1500, sent_via_agent = false } = req.body;
     const companyId = req.company.id;
 
     // Validações
@@ -476,10 +476,10 @@ router.post('/send-audio', async (req, res) => {
       'audio',
       'Áudio enviado',
       attachmentData,
-      false,
+      sent_via_agent, // ✅ CORREÇÃO: sent_via_agent = true marca como IA
       evolutionResult.key?.id,
       req.supabase,
-      false // sent_via_agent
+      sent_via_agent // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Áudio enviado:`, {
@@ -516,7 +516,7 @@ router.post('/send-audio', async (req, res) => {
 // ✅ ROTA: Enviar vídeo via conversation_id
 router.post('/send-video', async (req, res) => {
   try {
-    const { conversation_id, video_url, caption, delay = 2000 } = req.body;
+    const { conversation_id, video_url, caption, delay = 2000, sent_via_agent = false } = req.body;
     const companyId = req.company.id;
 
     // Validações
@@ -589,10 +589,10 @@ router.post('/send-video', async (req, res) => {
       'video',
       caption || 'Vídeo enviado',
       attachmentData,
-      false,
+      sent_via_agent, // ✅ CORREÇÃO: sent_via_agent = true marca como IA
       evolutionResult.key?.id,
       req.supabase,
-      false // sent_via_agent
+      sent_via_agent // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Vídeo enviado:`, {
@@ -629,7 +629,7 @@ router.post('/send-video', async (req, res) => {
 // ✅ ROTA: Enviar documento via conversation_id
 router.post('/send-document', async (req, res) => {
   try {
-    const { conversation_id, document_url, filename, caption, delay = 1500 } = req.body;
+    const { conversation_id, document_url, filename, caption, delay = 1500, sent_via_agent = false } = req.body;
     const companyId = req.company.id;
 
     // Validações
@@ -705,10 +705,10 @@ router.post('/send-document', async (req, res) => {
       'document',
       caption || `Documento: ${filename || 'arquivo'}`,
       attachmentData,
-      false,
+      sent_via_agent, // ✅ CORREÇÃO: sent_via_agent = true marca como IA
       evolutionResult.key?.id,
       req.supabase,
-      false // sent_via_agent
+      sent_via_agent // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Documento enviado:`, {
@@ -898,7 +898,7 @@ router.get('/:conversation_id', async (req, res) => {
 // ✅ ROTA: Upload e envio de imagem direto via conversation_id
 router.post('/upload-image', upload.single('image'), async (req, res) => {
   try {
-    const { conversation_id, caption, delay = 1200 } = req.body;
+    const { conversation_id, caption, delay = 1200, sent_via_agent = false } = req.body;
     const companyId = req.company.id;
 
     // Validações
@@ -990,10 +990,10 @@ router.post('/upload-image', upload.single('image'), async (req, res) => {
       'image',
       caption || 'Imagem enviada',
       attachmentData,
-      false,
+      sent_via_agent, // ✅ CORREÇÃO: sent_via_agent = true marca como IA
       evolutionResult.key?.id,
       req.supabase,
-      false // sent_via_agent
+      sent_via_agent // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Imagem enviada via upload:`, {
@@ -1293,7 +1293,7 @@ router.post('/upload-video', upload.single('video'), async (req, res) => {
 // ✅ ROTA: Upload e envio de documento direto via conversation_id
 router.post('/upload-document', upload.single('document'), async (req, res) => {
   try {
-    const { conversation_id, caption, delay = 1500 } = req.body;
+    const { conversation_id, caption, delay = 1500, sent_via_agent = false } = req.body;
     const companyId = req.company.id;
 
     // Validações
@@ -1386,10 +1386,10 @@ router.post('/upload-document', upload.single('document'), async (req, res) => {
       'document',
       caption || `Documento: ${req.file.originalname}`,
       attachmentData,
-      false,
+      sent_via_agent, // ✅ CORREÇÃO: sent_via_agent = true marca como IA
       evolutionResult.key?.id,
       req.supabase,
-      false // sent_via_agent
+      sent_via_agent // sent_via_agent
     );
 
     console.log(`✅ [CONVERSATION] Documento enviado via upload:`, {
