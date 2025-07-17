@@ -394,6 +394,147 @@ router.post('/send-image', async (req, res) => {
   }
 });
 
+// ✅ ROTA: Enviar imagem via base64 direto via conversation_id
+router.post('/send-image-base64', async (req, res) => {
+  try {
+    const { conversation_id, image_base64, caption, filename = 'image.jpg', delay = 1200, sent_via_agent = false } = req.body;
+    const companyId = req.company.id;
+    const apiKeyData = req.apiKey;
+
+    // Validações
+    if (!conversation_id || !image_base64) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parâmetros obrigatórios: conversation_id, image_base64',
+        example: {
+          conversation_id: "uuid-da-conversa",
+          image_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",
+          caption: "Legenda opcional",
+          filename: "imagem.jpg",
+          delay: 1200,
+          sent_via_agent: false
+        }
+      });
+    }
+
+    // Validar se é um base64 válido
+    if (!image_base64.match(/^[A-Za-z0-9+/]+(=|==)?$/)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Base64 inválido. Envie apenas a string base64 sem prefixos como "data:image/jpeg;base64,"'
+      });
+    }
+
+    console.log(`📸 [CONVERSATION] Enviando imagem via base64:`, {
+      company: req.company.name,
+      apiKey: apiKeyData.name,
+      conversationId: conversation_id,
+      filename: filename,
+      base64Length: image_base64.length,
+      sentViaAgent: sent_via_agent
+    });
+
+    // 1. Buscar dados da conversa
+    const conversationResult = await getConversationData(conversation_id, companyId, req.supabase);
+    if (!conversationResult.success) {
+      return res.status(404).json({
+        success: false,
+        error: conversationResult.error,
+        details: conversationResult.details
+      });
+    }
+
+    const { conversation, contact, instance } = conversationResult.data;
+
+    // 2. Calcular tamanho aproximado da imagem
+    const imageSizeBytes = (image_base64.length * 3) / 4;
+    const imageSizeKB = Math.round(imageSizeBytes / 1024);
+
+    // 3. Enviar via Evolution API
+    const evolutionResponse = await fetch(`${instance.server_url}/message/sendMedia/${instance.name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': instance.api_key
+      },
+      body: JSON.stringify({
+        number: contact.whatsapp_phone,
+        media: image_base64,
+        caption: caption || '',
+        fileName: filename,
+        mediatype: 'image',
+        options: {
+          delay: delay,
+          presence: 'composing'
+        }
+      })
+    });
+
+    const evolutionResult = await evolutionResponse.json();
+
+    if (!evolutionResponse.ok) {
+      throw new Error(evolutionResult.error?.message || 'Erro ao enviar imagem via base64');
+    }
+
+    // 4. Preparar dados do attachment
+    const attachmentData = {
+      name: filename,
+      type: 'image',
+      size: `${imageSizeKB} KB`,
+      caption: caption || null,
+      base64_sent: true,
+      url: `data:image/jpeg;base64,${image_base64}` // Para visualização
+    };
+
+    // 5. Salvar mensagem no banco
+    const saveResult = await saveMessageToDatabase(
+      conversation_id,
+      'outbound',
+      'image',
+      caption || 'Imagem enviada via base64',
+      attachmentData,
+      sent_via_agent,
+      evolutionResult.key?.id,
+      req.supabase,
+      sent_via_agent
+    );
+
+    console.log(`✅ [CONVERSATION] Imagem base64 enviada:`, {
+      conversationId: conversation_id,
+      messageId: saveResult.messageId,
+      filename: filename,
+      size: `${imageSizeKB} KB`,
+      sentViaAgent: sent_via_agent
+    });
+
+    res.json({
+      success: true,
+      message: 'Imagem enviada com sucesso via base64',
+      data: {
+        messageId: saveResult.messageId,
+        conversationId: conversation_id,
+        contactName: contact.name,
+        instanceName: instance.name,
+        evolutionId: evolutionResult.key?.id,
+        filename: filename,
+        fileSize: `${imageSizeKB} KB`,
+        caption: caption,
+        sentAt: new Date().toISOString(),
+        type: 'image',
+        method: 'base64',
+        sentViaAgent: sent_via_agent
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONVERSATION] Erro no envio de imagem base64:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // ✅ ROTA: Enviar áudio via conversation_id
 router.post('/send-audio', async (req, res) => {
   try {
