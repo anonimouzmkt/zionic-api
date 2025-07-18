@@ -145,6 +145,44 @@ function formatToISO(dateString, time = null, timezone = 'America/Sao_Paulo') {
   }
 }
 
+// ✅ NOVO: Converter UTC para timezone local (inverso do formatToISO)
+function convertUTCToTimezone(utcDateString, timezone = 'America/Sao_Paulo') {
+  try {
+    const utcDate = new Date(utcDateString);
+    
+    // Para São Paulo (UTC-3), subtraímos 3 horas para converter de UTC para local
+    if (timezone === 'America/Sao_Paulo') {
+      const localDate = new Date(utcDate.getTime() - (3 * 60 * 60 * 1000)); // -3 horas
+      return localDate.toISOString().replace('Z', '-03:00');
+    }
+    
+    // Para outros timezones, usar Intl.DateTimeFormat (fallback)
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
+    
+    const parts = formatter.formatToParts(utcDate);
+    const date = parts.find(p => p.type === 'year').value + '-' +
+                parts.find(p => p.type === 'month').value + '-' +
+                parts.find(p => p.type === 'day').value;
+    const time = parts.find(p => p.type === 'hour').value + ':' +
+                parts.find(p => p.type === 'minute').value + ':' +
+                parts.find(p => p.type === 'second').value;
+    
+    return `${date}T${time}${timezone === 'America/Sao_Paulo' ? '-03:00' : '+00:00'}`;
+  } catch (error) {
+    console.warn('⚠️ Erro ao converter UTC para timezone, usando formato original:', error);
+    return utcDateString;
+  }
+}
+
 // ✅ HELPER: Obter offset do timezone em milissegundos
 function getTimezoneOffset(timezone, date = new Date()) {
   try {
@@ -419,12 +457,12 @@ router.get('/availability', async (req, res) => {
       });
     }
 
-    // Calcular horários ocupados
+    // ✅ CORRIGIDO: Calcular horários ocupados convertidos para timezone da empresa
     const busySlots = appointments.map(apt => ({
       id: apt.id,
       title: apt.title,
-      start: apt.start_time,
-      end: apt.end_time,
+      start: convertUTCToTimezone(apt.start_time, companyTimezone),
+      end: convertUTCToTimezone(apt.end_time, companyTimezone),
       status: apt.status
     }));
 
@@ -457,6 +495,11 @@ router.get('/availability', async (req, res) => {
         utcSearchWindow: {
           start_utc: startDateTimeUTC,
           end_utc: endDateTimeUTC
+        },
+        timezoneConversion: {
+          companyTimezone,
+          busySlotsConvertedFromUTC: true,
+          note: "busy_slots horários convertidos de UTC para timezone da empresa"
         }
       }
     });
