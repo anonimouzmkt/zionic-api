@@ -1,1849 +1,1525 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { 
-  X, 
-  Building2, 
-  Mail, 
-  Phone, 
-  DollarSign, 
-  Calendar, 
-  MessageSquare, 
-  Edit2,
-  Star,
-  Clock,
-  Tag,
-  User,
-  ExternalLink,
-  ChevronRight,
-  MapPin,
-  Bot,
-  Activity,
-  ArrowRight,
-  FileText,
-  CheckSquare,
-  Image,
-  Mic,
-  Video,
-  AlertTriangle
-} from 'lucide-react';
-import { Lead } from './KanbanBoard';
-import { useSupabaseClient } from '@supabase/auth-helpers-react';
-import CustomFieldRenderer from '../Leads/CustomFieldRenderer';
-import { useCustomFields } from '../../hooks/useCustomFields';
-import { useToast } from '../../hooks/useToast';
-import { useAuth } from '../../contexts/AuthContext';
-import Toast from '../UI/Toast';
-import { GoogleCalendarService } from '../../services/googleCalendarService';
+const express = require('express');
+const router = express.Router();
 
-// ✅ NOVO: Ícone do WhatsApp (igual aos outros componentes)
-const WhatsAppIcon = () => (
-  <div className="w-4 h-4 bg-white rounded-full flex items-center justify-center border border-gray-200">
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className="text-green-500"
-    >
-      <path
-        d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893A11.821 11.821 0 0020.893 3.405"
-        fill="currentColor"
-      />
-    </svg>
-  </div>
-);
-
-// ✅ Tipos para os dados reais
-interface LeadActivity {
-  id: string;
-  activity_type: string;
-  title: string;
-  description: string;
-  icon: string;
-  color: string;
-  activity_timestamp: string;
-  duration_text: string;
-  metadata: any;
-}
-
-interface LeadNote {
-  id: string;
-  content: string;
-  author: string;
-  formatted_time: string;
-  created_at: string;
-}
-
-interface PipelineLeadDetailsModalProps {
-  lead: Lead;
-  onClose: () => void;
-  onEdit: () => void;
-  onViewFullDetails: () => void;
-}
-
-const PipelineLeadDetailsModal: React.FC<PipelineLeadDetailsModalProps> = ({ 
-  lead, 
-  onClose, 
-  onEdit,
-  onViewFullDetails 
-}) => {
-  const supabase = useSupabaseClient();
-  const navigate = useNavigate();
-  const { company } = useAuth();
-  const { toast, showSuccess, showError, hideToast } = useToast();
-  const [activeTab, setActiveTab] = useState('overview');
+// ✅ NOVO: Função helper para criar evento no Google Calendar
+async function createGoogleCalendarEvent(integration, eventData) {
+  const GOOGLE_API_BASE_URL = 'https://www.googleapis.com/calendar/v3';
   
-  // ✅ NOVO: Instância local do GoogleCalendarService com supabase client
-  const googleCalendarService = new GoogleCalendarService(supabase);
+  // Verificar se token ainda é válido ou precisa renovar
+  let accessToken = integration.access_token;
   
-  // ✅ NOVO: Estados para funcionalidades de ação rápida
-  const [conversations, setConversations] = useState<any[]>([]);
-  const [callAgents, setCallAgents] = useState<any[]>([]);
-  const [showCallModal, setShowCallModal] = useState(false);
-  const [callLoading, setCallLoading] = useState(false);
-  
-  // ✅ NOVO: Estados para seleção de instância WhatsApp
-  const [showWhatsAppModal, setShowWhatsAppModal] = useState(false);
-  const [whatsappInstances, setWhatsappInstances] = useState<any[]>([]);
-  const [whatsappLoading, setWhatsappLoading] = useState(false);
-  
-  // ✅ Estados para dados reais
-  const [activities, setActivities] = useState<LeadActivity[]>([]);
-  const [notes, setNotes] = useState<LeadNote[]>([]);
-  const [loading, setLoading] = useState(false);
-  
-  // ✅ NOVO: Estados para dados do criador e contato
-  const [creatorData, setCreatorData] = useState<{
-    name: string;
-    avatar_url?: string;
-  } | null>(null);
-  const [contactData, setContactData] = useState<{
-    full_name: string;
-    avatar_url?: string;
-  } | null>(null);
+  // Verificar se token está próximo do vencimento (5 minutos antes)
+  if (integration.token_expires_at) {
+    const expiresAt = new Date(integration.token_expires_at);
+    const fiveMinutesFromNow = new Date(Date.now() + 5 * 60 * 1000);
 
-  // ✅ NOVO: Estados para agendamento inline
-  const [showAppointmentForm, setShowAppointmentForm] = useState(false);
-  const [appointmentLoading, setAppointmentLoading] = useState(false);
-  const [appointmentForm, setAppointmentForm] = useState({
-    title: '',
-    description: '',
-    start_time: '',
-    end_time: '',
-    location: '',
-    attendees: [''],
-    create_meet: true
+    if (expiresAt <= fiveMinutesFromNow && integration.refresh_token) {
+      console.log('🔄 Token expiring soon, refreshing...');
+      
+      try {
+        const newTokens = await refreshGoogleToken(integration);
+        accessToken = newTokens.access_token;
+        
+        // Atualizar tokens no banco (será feito pelo caller)
+        integration._needsTokenUpdate = {
+          access_token: newTokens.access_token,
+          refresh_token: newTokens.refresh_token || integration.refresh_token,
+          expires_in: newTokens.expires_in
+        };
+      } catch (refreshError) {
+        console.error('❌ Erro ao renovar token:', refreshError);
+        throw new Error('Token expirado e não foi possível renovar');
+      }
+    }
+  }
+
+  // Preparar dados do evento para Google Calendar
+  const googleEvent = {
+    summary: eventData.title,
+    description: eventData.description,
+    start: {
+      dateTime: eventData.start_time,
+      timeZone: integration.timezone || 'America/Sao_Paulo'
+    },
+    end: {
+      dateTime: eventData.end_time,
+      timeZone: integration.timezone || 'America/Sao_Paulo'
+    },
+    location: eventData.location,
+    attendees: eventData.attendees?.map(email => ({ email }))
+  };
+
+  // Adicionar Google Meet se solicitado
+  if (eventData.createMeet && integration.auto_create_meet) {
+    googleEvent.conferenceData = {
+      createRequest: {
+        requestId: `meet-${Date.now()}`,
+        conferenceSolutionKey: {
+          type: 'hangoutsMeet'
+        }
+      }
+    };
+  }
+
+  // Fazer chamada para API do Google Calendar
+  const url = `${GOOGLE_API_BASE_URL}/calendars/${integration.calendar_id}/events?conferenceDataVersion=1`;
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(googleEvent)
   });
 
-  // ✅ NOVO: Ref para auto-scroll do formulário de agendamento
-  const appointmentFormRef = useRef<HTMLDivElement>(null);
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('❌ Google Calendar API Error:', errorText);
+    throw new Error(`Google Calendar API error: ${response.status} - ${errorText}`);
+  }
 
-  // Hook para campos personalizados
-  const { 
-    customFields, 
-    loading: customFieldsLoading, 
-    getLeadCustomFields 
-  } = useCustomFields();
-  const [leadCustomFields, setLeadCustomFields] = useState({});
+  return await response.json();
+}
+
+// ✅ NOVO: Função helper para renovar token do Google
+async function refreshGoogleToken(integration) {
+  const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
   
-  // ✅ NOVO: Detectar origem do lead
-  const isAICreated = lead.created_by === null;
-  const isManualCreated = lead.created_by !== null;
-  const isWhatsAppSource = lead.source?.toLowerCase().includes('whatsapp') || 
-                          lead.source?.toLowerCase().includes('chat');
+  const response = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      refresh_token: integration.refresh_token,
+      client_id: integration.client_id,
+      client_secret: integration.client_secret,
+      grant_type: 'refresh_token'
+    })
+  });
 
-  // ✅ NOVO: Funções para gerenciar agendamento inline
-  const handleOpenAppointmentForm = () => {
-    console.log('✅ handleOpenAppointmentForm executada - Configurando formulário inline');
-    console.log('📝 Lead:', { id: lead.id, name: lead.name, email: lead.email });
-    
-    // Pré-preencher dados baseados no lead
-    const now = new Date();
-    const defaultStart = new Date(now.getTime() + 60 * 60 * 1000); // 1 hora a partir de agora
-    const defaultEnd = new Date(defaultStart.getTime() + 60 * 60 * 1000); // 1 hora de duração
-    
-    setAppointmentForm({
-      title: `Reunião com ${lead.name}`,
-      description: `Reunião agendada com o lead ${lead.name} da empresa ${lead.company}`,
-      start_time: formatDateTimeForInput(defaultStart.toISOString()),
-      end_time: formatDateTimeForInput(defaultEnd.toISOString()),
-      location: '',
-      attendees: [lead.email],
-      create_meet: true
-    });
-    
-    console.log('🔄 Exibindo formulário de agendamento inline');
-    setShowAppointmentForm(true);
-    console.log('🎬 Auto-scroll será ativado após renderização...');
-  };
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(`Token refresh failed: ${errorData.error_description || errorData.error}`);
+  }
 
-  const handleCloseAppointmentForm = () => {
-    setShowAppointmentForm(false);
-  };
+  return await response.json();
+}
 
-  const formatDateTimeForInput = (dateString: string) => {
+// ✅ HELPER: Validar formato de data
+function isValidDate(dateString) {
+  const date = new Date(dateString);
+  return !isNaN(date.getTime());
+}
+
+// ✅ HELPER: Formatar data para ISO string considerando timezone
+function formatToISO(dateString, time = null, timezone = 'America/Sao_Paulo') {
+  try {
+    if (time) {
+      // Criar data no timezone específico
+      const localDateTime = `${dateString}T${time}:00`;
+      const date = new Date(localDateTime);
+      
+      // Ajustar para o timezone especificado
+      const offsetMs = getTimezoneOffset(timezone, date);
+      const adjustedDate = new Date(date.getTime() - offsetMs);
+      
+      return adjustedDate.toISOString();
+    }
+    
     const date = new Date(dateString);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    return `${year}-${month}-${day}T${hours}:${minutes}`;
-  };
+    const offsetMs = getTimezoneOffset(timezone, date);
+    const adjustedDate = new Date(date.getTime() - offsetMs);
+    
+    return adjustedDate.toISOString();
+  } catch (error) {
+    console.warn('⚠️ Erro ao formatar data com timezone, usando formato padrão:', error);
+    if (time) {
+      return new Date(`${dateString}T${time}:00.000Z`).toISOString();
+    }
+    return new Date(dateString).toISOString();
+  }
+}
 
-  const handleAppointmentFormChange = (field: string, value: any) => {
-    setAppointmentForm(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
+// ✅ HELPER: Obter offset do timezone em milissegundos
+function getTimezoneOffset(timezone, date = new Date()) {
+  try {
+    // Criar formatador para o timezone
+    const utc = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' }));
+    const local = new Date(date.toLocaleString('en-US', { timeZone: timezone }));
+    
+    // Calcular diferença
+    return utc.getTime() - local.getTime();
+  } catch (error) {
+    console.warn('⚠️ Erro ao calcular offset do timezone:', error);
+    return 0; // Fallback para UTC
+  }
+}
 
-  const handleCreateAppointment = async () => {
-    if (!company) {
-      showError('Empresa não encontrada');
-      return;
+// ✅ HELPER: Obter timezone da empresa
+async function getCompanyTimezone(companyId, supabase) {
+  try {
+    // Primeiro, tentar obter o timezone das configurações da empresa
+    const { data: companySettings, error: settingsError } = await supabase
+      .from('company_settings')
+      .select('timezone')
+      .eq('company_id', companyId)
+      .single();
+
+    if (!settingsError && companySettings?.timezone) {
+      return companySettings.timezone;
     }
 
-    if (!appointmentForm.title.trim() || !appointmentForm.start_time || !appointmentForm.end_time) {
-      showError('Preencha todos os campos obrigatórios');
-      return;
+    // Se não encontrar nas configurações da empresa, buscar do primeiro usuário da empresa
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('timezone')
+      .eq('company_id', companyId)
+      .not('timezone', 'is', null)
+      .limit(1)
+      .single();
+
+    if (!userError && userData?.timezone) {
+      return userData.timezone;
     }
 
-    try {
-      setAppointmentLoading(true);
+    // Fallback para timezone padrão do Brasil
+    return 'America/Sao_Paulo';
+  } catch (error) {
+    console.warn('⚠️ Erro ao obter timezone da empresa, usando padrão:', error);
+    return 'America/Sao_Paulo';
+  }
+}
 
-      const eventData = {
-        title: appointmentForm.title.trim(),
-        description: appointmentForm.description.trim(),
-        start_time: new Date(appointmentForm.start_time).toISOString(),
-        end_time: new Date(appointmentForm.end_time).toISOString(),
-        location: appointmentForm.location.trim(),
-        attendees: appointmentForm.attendees.filter(email => email.trim()).map(email => email.trim()),
-        createMeet: appointmentForm.create_meet,
-        lead_id: lead.id // ✅ Vinculado automaticamente ao lead
+// ✅ HELPER NOVO: Validar se calendar_id pertence à empresa e está ativo
+async function validateCalendarId(calendarId, companyId, supabase) {
+  try {
+    // ✅ CORRIGIDO: Buscar TODOS os campos necessários para o GoogleCalendarService
+    const { data: integration, error } = await supabase
+      .from('google_calendar_integrations')
+      .select(`
+        id, company_id, user_id, client_id, client_secret, redirect_uri,
+        access_token, refresh_token, token_expires_at, calendar_id, calendar_name,
+        status, is_active, timezone, auto_create_meet, sync_enabled, sync_token,
+        created_at, updated_at, last_sync_at
+      `)
+      .eq('id', calendarId)
+      .eq('company_id', companyId)
+      .eq('is_active', true)
+      .eq('status', 'connected')
+      .single();
+
+    if (error || !integration) {
+      return {
+        valid: false,
+        error: 'Integração de calendário não encontrada ou inativa',
+        integration: null
       };
-
-      await googleCalendarService.createEvent(company.id, eventData);
-      
-      showSuccess('Agendamento criado com sucesso!');
-      setShowAppointmentForm(false);
-      
-      // Recarregar atividades para mostrar o novo appointment
-      fetchActivities();
-      
-    } catch (error: any) {
-      console.error('Erro ao criar agendamento:', error);
-      showError(`Erro ao criar agendamento: ${error.message || 'Erro desconhecido'}`);
-    } finally {
-      setAppointmentLoading(false);
     }
-  };
-  
-  // ✅ NOVO: Helper functions
-  const getInitials = (name: string) => {
-    return name
-      .split(' ')
-      .map(part => part[0])
-      .join('')
-      .toUpperCase()
-      .substring(0, 2);
-  };
 
-  const getAvatarGradient = (id: string) => {
-    const colors = [
-      'from-blue-500 to-purple-600', 
-      'from-green-500 to-teal-600', 
-      'from-orange-500 to-red-600',
-      'from-purple-500 to-indigo-600',
-      'from-pink-500 to-rose-600'
-    ];
-    
-    const index = parseInt(id.slice(-1), 16) % colors.length;
-    return colors[index];
-  };
-  
-  // ✅ Função para mapear ícones
-  const getIconComponent = (iconName: string) => {
-    const iconMap: { [key: string]: React.ComponentType<any> } = {
-      'User': User,
-      'Edit2': Edit2,
-      'ArrowRight': ArrowRight,
-      'Bot': Bot,
-      'Phone': Phone,
-      'MessageSquare': MessageSquare,
-      'Activity': Activity,
-      'Mail': Mail,
-              'FileText': FileText,
-        'CheckSquare': CheckSquare,
-        'Image': Image,
-        'Mic': Mic,
-        'Video': Video
+    if (!integration.access_token) {
+      return {
+        valid: false,
+        error: 'Integração de calendário sem token de acesso válido',
+        integration: null
+      };
+    }
+
+    // ✅ CORRIGIDO: Retornar objeto completo GoogleCalendarIntegration
+    return {
+      valid: true,
+      integration: {
+        id: integration.id,
+        company_id: integration.company_id,
+        user_id: integration.user_id,
+        client_id: integration.client_id,
+        client_secret: integration.client_secret,
+        redirect_uri: integration.redirect_uri,
+        access_token: integration.access_token,
+        refresh_token: integration.refresh_token,
+        token_expires_at: integration.token_expires_at,
+        calendar_id: integration.calendar_id,
+        calendar_name: integration.calendar_name,
+        status: integration.status,
+        is_active: integration.is_active,
+        timezone: integration.timezone,
+        auto_create_meet: integration.auto_create_meet,
+        sync_enabled: integration.sync_enabled,
+        sync_token: integration.sync_token,
+        created_at: integration.created_at,
+        updated_at: integration.updated_at,
+        last_sync_at: integration.last_sync_at
+      }
     };
-    
-    const IconComponent = iconMap[iconName] || Activity;
-    return IconComponent;
+  } catch (error) {
+    console.error('❌ Erro ao validar calendar_id:', error);
+    return {
+      valid: false,
+      error: 'Erro interno ao validar integração de calendário',
+      integration: null
+    };
+  }
+}
+
+// ✅ HELPER: Verificar se empresa tem integração ativa do Google Calendar
+async function checkGoogleCalendarIntegration(companyId, supabase) {
+  // ✅ NOVO: Buscar todas as integrações ativas (múltiplas agendas)
+  const { data, error } = await supabase
+    .from('google_calendar_integrations')
+    .select('id, status, access_token, is_active, calendar_id, calendar_name, user_id')
+    .eq('company_id', companyId)
+    .eq('is_active', true)
+    .eq('status', 'connected');
+
+  if (error || !data || data.length === 0) {
+    return {
+      hasIntegration: false,
+      error: 'Nenhuma integração ativa do Google Calendar encontrada',
+      integrations: []
+    };
+  }
+
+  // Filtrar apenas integrações com access_token válido
+  const validIntegrations = data.filter(integration => integration.access_token);
+
+  if (validIntegrations.length === 0) {
+    return {
+      hasIntegration: false,
+      error: 'Nenhuma integração conectada do Google Calendar encontrada',
+      integrations: []
+    };
+  }
+
+  return {
+    hasIntegration: true,
+    integrations: validIntegrations,
+    primary: validIntegrations[0] // Primeira integração como primária para compatibilidade
   };
-  
-  // ✅ Função para buscar atividades reais COM PROTEÇÃO contra erros de enum
-  const fetchActivities = async () => {
-    try {
-      // Primeiro, tentar buscar normalmente
-      const { data, error } = await supabase.rpc('get_lead_activities', {
-        p_lead_id: lead.id
+}
+
+// ✅ 1. ENDPOINT: Verificar disponibilidade de horário (MODIFICADO - requer calendar_id)
+router.get('/availability/:date', async (req, res) => {
+  try {
+    const { company } = req;
+    const { date } = req.params;
+    const { start_hour = '08:00', end_hour = '18:00', calendar_id } = req.query;
+
+    // ✅ NOVO: Validar calendar_id obrigatório
+    if (!calendar_id) {
+      return res.status(400).json({
+        error: 'Parâmetro obrigatório faltando',
+        message: 'calendar_id é obrigatório. Use GET /api/calendar/integrations para listar as agendas disponíveis'
       });
-
-      if (error) {
-        // ✅ PROTEÇÃO: Se o erro for relacionado ao enum activity_type
-        if (error.code === '22P02' && error.message?.includes('activity_type')) {
-          console.warn('⚠️ Detectado erro de enum activity_type, tentando busca alternativa...');
-          
-          // Buscar atividades manualmente, filtrando apenas registros válidos
-          const { data: fallbackData, error: fallbackError } = await supabase
-            .from('lead_activities')
-            .select(`
-              id,
-              type,
-              title,
-              description,
-              created_at,
-              metadata,
-              performed_by,
-              users!performed_by(first_name, last_name)
-            `)
-            .eq('lead_id', lead.id)
-            .order('created_at', { ascending: false })
-            .limit(20);
-
-          if (fallbackError) {
-            console.error('Erro na busca alternativa:', fallbackError);
-            return;
-          }
-
-          // Mapear dados para o formato esperado
-          const mappedActivities = (fallbackData || []).map(activity => ({
-            id: activity.id,
-            activity_type: activity.type,
-            title: activity.title,
-            description: activity.description || 'Atividade registrada',
-            icon: getActivityIcon(activity.type),
-            color: getActivityColor(activity.type),
-            activity_timestamp: activity.created_at,
-            duration_text: getDurationText(activity.created_at),
-            metadata: {
-              ...activity.metadata,
-              performed_by_user: activity.performed_by !== null,
-              performer_name: activity.users 
-                ? `${activity.users.first_name || ''} ${activity.users.last_name || ''}`.trim() || 'Usuário'
-                : 'Sistema',
-              fallback_mode: true
-            }
-          }));
-
-          // Adicionar atividade de criação do lead
-          const creationActivity = {
-            id: `creation_${lead.id}`,
-            activity_type: 'lead_created',
-            title: lead.created_by ? 'Lead criado por usuário' : 'Lead criado pela IA',
-            description: lead.created_by 
-              ? 'Lead criado manualmente por um usuário do sistema.'
-              : 'Agente IA analisou a conversa e criou automaticamente este lead.',
-            icon: 'Bot',
-            color: lead.created_by ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600',
-            activity_timestamp: new Date().toISOString(), // Usar timestamp atual como fallback
-            duration_text: 'Criação do lead',
-            metadata: {
-              created_by_ai: !lead.created_by,
-              created_by_user: !!lead.created_by,
-              lead_data: {
-                estimated_value: lead.value,
-                priority: lead.priority,
-                source: lead.source
-              },
-              fallback_mode: true
-            }
-          };
-
-          setActivities([creationActivity, ...mappedActivities]);
-          return;
-        }
-        
-        console.error('Erro ao buscar atividades:', error);
-        return;
-      }
-
-      setActivities(data || []);
-    } catch (error) {
-      console.error('Erro ao buscar atividades:', error);
     }
-  };
 
-  // ✅ NOVO: Funções auxiliares para o modo fallback
-  const getActivityIcon = (type: string) => {
-    const iconMap: { [key: string]: string } = {
-      'status_change': 'ArrowRight',
-      'value_change': 'Edit2', 
-      'note': 'FileText',
-      'call': 'Phone',
-      'email': 'Mail',
-      'meeting': 'Calendar',
-      'task': 'CheckSquare',
-      'lead_created': 'Bot',
-      'lead_updated': 'Edit2'
-    };
-    return iconMap[type] || 'Activity';
-  };
-
-  const getActivityColor = (type: string) => {
-    const colorMap: { [key: string]: string } = {
-      'status_change': 'bg-purple-100 text-purple-600',
-      'value_change': 'bg-blue-100 text-blue-600',
-      'note': 'bg-gray-100 text-gray-600',
-      'call': 'bg-green-100 text-green-600',
-      'email': 'bg-cyan-100 text-cyan-600',
-      'meeting': 'bg-yellow-100 text-yellow-600',
-      'task': 'bg-teal-100 text-teal-600',
-      'lead_created': 'bg-blue-100 text-blue-600',
-      'lead_updated': 'bg-orange-100 text-orange-600'
-    };
-    return colorMap[type] || 'bg-gray-100 text-gray-600';
-  };
-
-  const getDurationText = (timestamp: string) => {
-    const now = new Date();
-    const activityTime = new Date(timestamp);
-    const diffMs = now.getTime() - activityTime.getTime();
-    
-    const minutes = Math.floor(diffMs / (1000 * 60));
-    const hours = Math.floor(diffMs / (1000 * 60 * 60));
-    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    
-    if (minutes < 60) {
-      return `${minutes} minutos atrás`;
-    } else if (hours < 24) {
-      return `${hours} horas atrás`;
-    } else if (days < 7) {
-      return `${days} dias atrás`;
-    } else {
-      return activityTime.toLocaleDateString('pt-BR');
-    }
-  };
-
-  // ✅ Função para buscar notas reais
-  const fetchNotes = async () => {
-    try {
-      const { data, error } = await supabase.rpc('get_lead_notes', {
-        p_lead_id: lead.id
+    // ✅ NOVO: Validar se calendar_id é válido para a empresa
+    const calendarValidation = await validateCalendarId(calendar_id, company.id, req.supabase);
+    if (!calendarValidation.valid) {
+      return res.status(400).json({
+        error: 'Agenda inválida',
+        message: calendarValidation.error
       });
-
-      if (error) {
-        console.error('Erro ao buscar notas:', error);
-        return;
-      }
-
-      setNotes(data || []);
-    } catch (error) {
-      console.error('Erro ao buscar notas:', error);
     }
-  };
 
-  // Carregar campos personalizados
-  const loadLeadCustomFields = async () => {
-    if (!lead.id) return;
-
-    try {
-      const fieldValues = await getLeadCustomFields(lead.id);
-      setLeadCustomFields(fieldValues);
-    } catch (error) {
-      console.error('Error loading lead custom fields:', error);
+    // Validar data
+    if (!isValidDate(date)) {
+      return res.status(400).json({
+        error: 'Data inválida',
+        message: 'Use formato YYYY-MM-DD'
+      });
     }
-  };
-  
-  // ✅ Buscar dados do criador e contato
-  useEffect(() => {
-    const fetchCreatorAndContactData = async () => {
-      setLoading(true);
-      
-      try {
-        // Buscar dados do criador (se foi criado manualmente)
-        if (isManualCreated && lead.created_by) {
-          const { data: creator } = await supabase
-            .from('users')
-            .select('first_name, last_name, avatar_url')
-            .eq('id', lead.created_by)
-            .single();
-          
-          if (creator) {
-            setCreatorData({
-              name: `${creator.first_name || ''} ${creator.last_name || ''}`.trim() || 'Usuário',
-              avatar_url: creator.avatar_url
-            });
-          }
-        }
 
-        // Buscar dados do contato
-        if (lead.contact_id) {
-          const { data: contact } = await supabase
-            .from('contacts')
-            .select('full_name, avatar_url')
-            .eq('id', lead.contact_id)
-            .single();
-          
-          if (contact) {
-            setContactData({
-              full_name: contact.full_name || 'Contato',
-              avatar_url: contact.avatar_url
-            });
-          }
-        }
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
 
-        // ✅ NOVO: Buscar conversas do lead (CORRIGIDO: melhor busca e debug)
-        if (lead.contact_id && company?.id) {
-          console.log('🔍 Buscando conversas existentes para:', {
-            contact_id: lead.contact_id,
-            company_id: company.id
-          });
-          
-          const { data: conversationsData, error: conversationsError } = await supabase
-            .from('conversations')
-            .select(`
-              id, 
-              title, 
-              status,
-              integration_id,
-              external_id,
-              communication_integrations(provider, name, is_active)
-            `)
-                        .eq('contact_id', lead.contact_id)
-            .eq('company_id', company.id)
-            .eq('status', 'active')
-            .order('last_message_at', { ascending: false });
-          
-          if (conversationsError) {
-            console.error('❌ Erro ao buscar conversas:', conversationsError);
-          } else {
-            console.log('📊 Conversas encontradas:', conversationsData?.length || 0);
-            console.log('🔍 Debug conversas:', conversationsData);
-            setConversations(conversationsData || []);
-          }
-        }
+    // Definir período do dia considerando timezone da empresa
+    const startDateTime = formatToISO(date, start_hour, companyTimezone);
+    const endDateTime = formatToISO(date, end_hour, companyTimezone);
 
-        // ✅ NOVO: Buscar agentes de call
-        if (company?.id) {
-          const { data: agentsData } = await supabase
-            .from('agent_call')
-            .select('id, name, assistant_id, is_active')
-            .eq('company_id', company.id)
-            .eq('is_active', true)
-            .not('assistant_id', 'is', null);
-          
-          setCallAgents(agentsData || []);
-        }
+    console.log(`🔍 Verificando disponibilidade para ${date} entre ${start_hour} e ${end_hour} na agenda ${calendarValidation.integration.calendar_name}`);
 
-        // Buscar atividades e notas
-        await Promise.all([
-          fetchActivities(),
-          fetchNotes(),
-          loadLeadCustomFields()
-        ]);
+    // ✅ CORRIGIDO: Buscar appointments da agenda específica usando google_calendar_id
+    const { data: appointments, error } = await req.supabase
+      .from('appointments')
+      .select('id, title, start_time, end_time, status, google_calendar_id')
+      .eq('company_id', company.id)
+      .eq('google_calendar_id', calendarValidation.integration.calendar_id)
+      .gte('start_time', startDateTime)
+      .lte('end_time', endDateTime)
+      .neq('status', 'cancelled')
+      .order('start_time', { ascending: true });
 
-      } catch (error) {
-        console.error('Erro ao buscar dados do criador/contato:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchCreatorAndContactData();
-  }, [lead.created_by, lead.contact_id, lead.id, isManualCreated, company?.id, supabase]);
-
-  // ✅ DEBUG: Log de inicialização das funções
-  useEffect(() => {
-    console.log('🎯 PipelineLeadDetailsModal carregado');
-    console.log('🔍 Debug - Funções definidas:');
-    console.log('  - handleOpenWhatsApp:', typeof handleOpenWhatsApp);
-    console.log('  - fetchWhatsAppInstances:', typeof fetchWhatsAppInstances);
-    console.log('  - handleCreateWhatsAppConversation:', typeof handleCreateWhatsAppConversation);
-  }, []);
-
-  // ✅ NOVO: Auto-scroll para o formulário de agendamento quando abrir
-  useEffect(() => {
-    if (showAppointmentForm && appointmentFormRef.current) {
-      console.log('📜 Auto-scroll iniciado - Rolando para o formulário de agendamento');
-      
-      // Aguardar um pouco para garantir que o elemento foi renderizado
-      setTimeout(() => {
-        appointmentFormRef.current?.scrollIntoView({ 
-          behavior: 'smooth', 
-          block: 'center', // Mudar para 'center' para melhor visualização
-          inline: 'nearest'
-        });
-        console.log('🎯 Auto-scroll concluído!');
-      }, 200); // Aumentar o delay para 200ms
+    if (error) {
+      console.error('❌ Erro ao buscar appointments:', error);
+      return res.status(500).json({
+        error: 'Erro interno do servidor',
+        details: error.message
+      });
     }
-  }, [showAppointmentForm]);
 
-  // ✅ NOVO: Funções para botões de ação rápida
-  const handleOpenWhatsApp = async () => {
-    console.log('🔔 Botão WhatsApp clicado - Buscando conversa do lead');
-    console.log('🔍 Debug - conversations:', conversations);
-    console.log('🔍 Debug - company:', company);
-    console.log('🔍 Debug - lead.contact_id:', lead.contact_id);
-    
-    // ✅ BUSCA MAIS ROBUSTA: verificar diferentes estruturas de dados
-    let whatsappConversation = null;
-    
-    // Tentar diferentes formas de encontrar conversa WhatsApp
-    for (const conv of conversations) {
-      console.log('🔍 Analisando conversa:', conv);
-      
-      // Verificar se tem communication_integrations como objeto
-      if (conv.communication_integrations?.provider === 'whatsapp') {
-        whatsappConversation = conv;
-        console.log('✅ Encontrada por communication_integrations.provider');
-        break;
-      }
-      
-      // Verificar se tem communication_integrations como array (caso de erro de estrutura)
-      if (Array.isArray(conv.communication_integrations)) {
-        const whatsappIntegration = conv.communication_integrations.find(int => int.provider === 'whatsapp');
-        if (whatsappIntegration) {
-          whatsappConversation = conv;
-          console.log('✅ Encontrada por communication_integrations array');
-          break;
-        }
-      }
-    }
-    
-    console.log('🔍 Debug - whatsappConversation final:', whatsappConversation);
-    
-    if (whatsappConversation) {
-      console.log('✅ Conversa WhatsApp encontrada:', whatsappConversation.id);
-      // Navegar para a conversa na mesma aba
-      navigate(`/chat/${whatsappConversation.id}`);
-      onClose(); // Fechar o modal
-    } else {
-      console.log('⚠️ Nenhuma conversa WhatsApp encontrada, revalidando com busca direta...');
-      
-      // ✅ BUSCA DIRETA no banco para ter certeza
-      if (!company?.id || !lead.contact_id) {
-        console.error('❌ Dados faltando - company.id:', company?.id, 'lead.contact_id:', lead.contact_id);
-        showError('Dados da empresa ou contato não encontrados');
-        return;
-      }
-      
-      try {
-        console.log('🔄 Fazendo busca direta no banco de dados...');
-        const { data: directConversations, error: directError } = await supabase
-          .from('conversations')
-          .select(`
-            id, 
-            title,
-            communication_integrations!inner(provider)
-          `)
-          .eq('contact_id', lead.contact_id)
-          .eq('company_id', company.id)
-          .eq('communication_integrations.provider', 'whatsapp')
-          .eq('status', 'active')
-          .limit(1);
-        
-        if (directError) {
-          console.error('❌ Erro na busca direta:', directError);
-        } else if (directConversations && directConversations.length > 0) {
-          console.log('✅ Conversa WhatsApp encontrada na busca direta!', directConversations[0]);
-          navigate(`/chat/${directConversations[0].id}`);
-          onClose();
-          return;
-        }
-        
-        console.log('🚫 Realmente não existe conversa WhatsApp - prosseguindo para criar nova');
-        
-        // Buscar instâncias WhatsApp disponíveis e mostrar modal de seleção
-        await fetchWhatsAppInstances();
-        console.log('✅ fetchWhatsAppInstances executada com sucesso');
-        
-      } catch (error) {
-        console.error('❌ Erro ao buscar conversas direto ou instâncias:', error);
-        showError('Erro inesperado ao buscar conversas WhatsApp');
-      }
-    }
-  };
+    // Calcular horários ocupados
+    const busySlots = appointments.map(apt => ({
+      id: apt.id,
+      title: apt.title,
+      start: apt.start_time,
+      end: apt.end_time,
+      status: apt.status
+    }));
 
-  // ✅ NOVO: Buscar instâncias WhatsApp disponíveis
-  const fetchWhatsAppInstances = async () => {
-    console.log('🔄 fetchWhatsAppInstances iniciada');
-    console.log('🔍 Debug - company.id:', company?.id);
-    
-    if (!company?.id) {
-      console.error('❌ Company ID não encontrado, abortando fetchWhatsAppInstances');
-      return;
+    // Determinar se o dia está livre
+    const isFree = busySlots.length === 0;
+
+    return res.json({
+      success: true,
+      date,
+      is_free: isFree,
+      total_appointments: busySlots.length,
+      busy_slots: busySlots,
+      availability_window: {
+        start: startDateTime,
+        end: endDateTime
+      },
+      calendar_info: {
+        id: calendarValidation.integration.id,
+        name: calendarValidation.integration.calendar_name,
+        calendar_id: calendarValidation.integration.calendar_id
+      },
+      timezone: companyTimezone,
+      company: {
+        id: company.id,
+        name: company.name
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro em /availability:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+// ✅ 2. ENDPOINT: Agendar horário (MODIFICADO - requer calendar_id)
+router.post('/schedule', async (req, res) => {
+  try {
+    const { company } = req;
+    const {
+      title,
+      description,
+      start_time,
+      end_time,
+      location,
+      attendees = [],
+      lead_id,
+      create_google_meet = true,
+      all_day = false,
+      calendar_id
+    } = req.body;
+
+    // ✅ NOVO: Validar calendar_id obrigatório
+    if (!calendar_id) {
+      return res.status(400).json({
+        error: 'Parâmetro obrigatório faltando',
+        message: 'calendar_id é obrigatório no body da requisição. Use GET /api/calendar/integrations para listar as agendas disponíveis'
+      });
     }
-    
-    try {
-      setWhatsappLoading(true);
-      console.log('⏳ Loading ativo, buscando instâncias...');
-      
-      // Buscar todas as integrações WhatsApp ativas da empresa
-      const { data: instances, error } = await supabase
-        .from('communication_integrations')
-        .select('id, name, provider, config, connection_status')
+
+    // ✅ NOVO: Validar se calendar_id é válido para a empresa
+    const calendarValidation = await validateCalendarId(calendar_id, company.id, req.supabase);
+    if (!calendarValidation.valid) {
+      return res.status(400).json({
+        error: 'Agenda inválida',
+        message: calendarValidation.error
+      });
+    }
+
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
+    // Validações obrigatórias
+    if (!title || !start_time || !end_time) {
+      return res.status(400).json({
+        error: 'Dados obrigatórios faltando',
+        message: 'title, start_time, end_time e calendar_id são obrigatórios'
+      });
+    }
+
+    // Validar datas
+    if (!isValidDate(start_time) || !isValidDate(end_time)) {
+      return res.status(400).json({
+        error: 'Datas inválidas',
+        message: 'Use formato ISO 8601 (YYYY-MM-DDTHH:mm:ss.sssZ)'
+      });
+    }
+
+    // Verificar se end_time é após start_time
+    if (new Date(end_time) <= new Date(start_time)) {
+      return res.status(400).json({
+        error: 'Horário inválido',
+        message: 'Horário de fim deve ser posterior ao de início'
+      });
+    }
+
+    console.log(`📅 Agendando: ${title} para ${start_time} - ${end_time} na agenda ${calendarValidation.integration.calendar_name}`);
+
+    // Verificar se lead_id existe (se fornecido)
+    if (lead_id) {
+      const { data: lead, error: leadError } = await req.supabase
+        .from('leads')
+        .select('id, contact_id')
+        .eq('id', lead_id)
         .eq('company_id', company.id)
-        .eq('provider', 'whatsapp')
-        .eq('is_active', true)
-        .order('name');
-      
-      console.log('📊 Resultado da query:', { instances, error });
-      
-      if (error) {
-        console.error('❌ Erro ao buscar instâncias WhatsApp:', error);
-        showError('Erro ao buscar instâncias WhatsApp');
-        return;
-      }
-      
-      if (!instances || instances.length === 0) {
-        console.warn('⚠️ Nenhuma instância encontrada');
-        showError('Nenhuma instância WhatsApp ativa encontrada. Configure uma instância primeiro.');
-        return;
-      }
-      
-      console.log(`✅ ${instances.length} instâncias WhatsApp encontradas:`, instances);
-      setWhatsappInstances(instances);
-      setShowWhatsAppModal(true);
-      console.log('🎯 Modal WhatsApp será exibido');
-      
-    } catch (error) {
-      console.error('❌ Erro inesperado ao buscar instâncias:', error);
-      showError('Erro inesperado ao buscar instâncias WhatsApp');
-    } finally {
-      setWhatsappLoading(false);
-      console.log('🏁 fetchWhatsAppInstances finalizada');
-    }
-  };
-
-  // ✅ NOVO: Criar conversa com instância selecionada
-  const handleCreateWhatsAppConversation = async (instanceId: string) => {
-    if (!company?.id || !lead.contact_id) {
-      showError('Dados da empresa ou contato não encontrados');
-      return;
-    }
-    
-    try {
-      setWhatsappLoading(true);
-      
-      // Buscar dados da instância selecionada
-      const selectedInstance = whatsappInstances.find(inst => inst.id === instanceId);
-      if (!selectedInstance) {
-        showError('Instância selecionada não encontrada');
-        return;
-      }
-      
-      console.log('✅ Criando conversa com instância:', selectedInstance.name);
-      
-      // ✅ VERIFICAÇÃO FINAL: Tentar encontrar conversa existente antes de criar
-      console.log('🔍 Verificação final: buscando conversa existente...');
-      const { data: finalCheck, error: finalCheckError } = await supabase
-        .from('conversations')
-        .select('id')
-                  .eq('contact_id', lead.contact_id)
-          .eq('company_id', company.id)
-          .eq('integration_id', instanceId)
-          .eq('status', 'active')
-          .limit(1);
-      
-      if (!finalCheckError && finalCheck && finalCheck.length > 0) {
-        console.log('⚠️ Conversa existente encontrada na verificação final! Redirecionando...');
-        setShowWhatsAppModal(false);
-        navigate(`/chat/${finalCheck[0].id}`);
-        onClose();
-        return;
-      }
-      
-      // ✅ USAR external_id baseado no telefone do lead (padrão do sistema)
-      const externalId = lead.phone || `lead-contact-${lead.contact_id}`;
-      
-      // Criar nova conversa usando o padrão do sistema
-      const { data: newConversation, error: conversationError } = await supabase
-        .from('conversations')
-        .insert({
-          company_id: company.id,
-          contact_id: lead.contact_id,
-          integration_id: instanceId,
-          external_id: externalId, // ✅ Usar phone como external_id padrão
-          title: `Conversa com ${lead.name}`,
-          status: 'active',
-          priority: 'normal',
-          first_message_at: new Date().toISOString(),
-          last_message_at: new Date().toISOString(),
-          tags: ['lead', 'pipeline'],
-          metadata: {
-            created_from: 'lead_pipeline',
-            lead_id: lead.id,
-            lead_title: lead.name,
-            lead_company: lead.company,
-            lead_value: lead.value,
-            whatsapp_instance: selectedInstance.name
-          }
-        })
-        .select('id')
         .single();
-      
-      if (conversationError || !newConversation) {
-        console.error('❌ Erro ao criar conversa:', conversationError);
+
+      if (leadError || !lead) {
+        return res.status(400).json({
+          error: 'Lead não encontrado',
+          message: 'O lead_id fornecido não existe ou não pertence à empresa'
+        });
+      }
+    }
+
+    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica
+    const { data: conflicts, error: conflictError } = await req.supabase
+      .from('appointments')
+      .select('id, title, start_time, end_time')
+      .eq('company_id', company.id)
+      .eq('google_calendar_id', calendarValidation.integration.calendar_id)
+      .neq('status', 'cancelled')
+      .or(`and(start_time.lte.${start_time},end_time.gte.${start_time}),and(start_time.lte.${end_time},end_time.gte.${end_time}),and(start_time.gte.${start_time},end_time.lte.${end_time})`);
+
+    if (conflictError) {
+      console.error('❌ Erro ao verificar conflitos:', conflictError);
+      return res.status(500).json({
+        error: 'Erro ao verificar conflitos',
+        details: conflictError.message
+      });
+    }
+
+    if (conflicts && conflicts.length > 0) {
+      return res.status(409).json({
+        error: 'Conflito de horário',
+        message: 'Já existe um agendamento neste horário nesta agenda',
+        conflicts: conflicts.map(c => ({
+          appointment_id: c.id,
+          title: c.title,
+          start_time: c.start_time,
+          end_time: c.end_time
+        })),
+        calendar_info: {
+          id: calendarValidation.integration.id,
+          name: calendarValidation.integration.calendar_name
+        }
+      });
+    }
+
+    // Preparar dados dos participantes
+    const attendeesJson = Array.isArray(attendees) 
+      ? attendees.map(email => typeof email === 'string' 
+          ? { email, displayName: email.split('@')[0] }
+          : email)
+      : [];
+
+    // ✅ CORRIGIDO: Criar appointment no banco com estrutura correta
+    const { data: appointment, error: createError } = await req.supabase
+      .from('appointments')
+      .insert({
+        company_id: company.id,
+        created_by: req.apiKey.created_by || null, // API key pode não ter usuário
+        title,
+        description,
+        start_time,
+        end_time,
+        location,
+        attendees: attendeesJson,
+        google_calendar_id: calendarValidation.integration.calendar_id, // Email da agenda do Google
+        create_meet: create_google_meet,
+        lead_id,
+        all_day,
+        status: 'scheduled'
+      })
+      .select('*')
+      .single();
+
+    if (createError) {
+      console.error('❌ Erro ao criar appointment:', createError);
+      return res.status(500).json({
+        error: 'Erro ao criar agendamento',
+        details: createError.message
+      });
+    }
+
+    console.log(`✅ Appointment criado: ${appointment.id}`);
+
+    // ✅ NOVO: Criar evento automaticamente no Google Calendar
+    let googleEventInfo = {
+      integration_status: 'not_attempted',
+      message: 'Sincronização com Google Calendar não configurada',
+      calendar_info: {
+        id: calendarValidation.integration.id,
+        name: calendarValidation.integration.calendar_name,
+        calendar_id: calendarValidation.integration.calendar_id
+      }
+    };
+
+    // Verificar se a integração tem tokens válidos para criar no Google Calendar
+    if (calendarValidation.integration.access_token) {
+      try {
+        console.log(`🔄 Criando evento no Google Calendar...`);
         
-        // ✅ Se erro for de duplicata, tentar buscar a conversa existente
-        if (conversationError?.code === '23505') { // Unique constraint violation
-          console.log('⚠️ Conversa duplicada detectada, buscando conversa existente...');
-          const { data: existingConv } = await supabase
-            .from('conversations')
-            .select('id')
-            .eq('contact_id', lead.contact_id)
-            .eq('integration_id', instanceId)
-            .limit(1);
-          
-          if (existingConv && existingConv.length > 0) {
-            console.log('✅ Conversa existente encontrada após erro de duplicata');
-            setShowWhatsAppModal(false);
-            navigate(`/chat/${existingConv[0].id}`);
-            onClose();
-            return;
+        // Preparar dados do evento para Google Calendar
+        const googleEventData = {
+          title,
+          description,
+          start_time,
+          end_time,
+          location,
+          attendees: attendeesJson.map(att => att.email).filter(Boolean),
+          all_day,
+          createMeet: create_google_meet,
+          lead_id
+        };
+
+        // Criar evento no Google Calendar usando nossa função helper
+        const googleEvent = await createGoogleCalendarEvent(
+          calendarValidation.integration,
+          googleEventData
+        );
+
+        // ✅ NOVO: Se houve renovação de token, atualizar no banco
+        if (calendarValidation.integration._needsTokenUpdate) {
+          const tokenUpdate = calendarValidation.integration._needsTokenUpdate;
+          const expiresAt = new Date(Date.now() + tokenUpdate.expires_in * 1000);
+
+          const { error: tokenUpdateError } = await req.supabase
+            .from('google_calendar_integrations')
+            .update({
+              access_token: tokenUpdate.access_token,
+              refresh_token: tokenUpdate.refresh_token,
+              token_expires_at: expiresAt.toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', calendarValidation.integration.id);
+
+          if (tokenUpdateError) {
+            console.error('⚠️ Erro ao atualizar tokens renovados:', tokenUpdateError);
+          } else {
+            console.log('✅ Tokens renovados salvos com sucesso');
           }
         }
-        
-        showError('Erro ao criar conversa. Tente novamente.');
-        return;
-      }
-      
-      console.log('✅ Nova conversa criada:', newConversation.id);
-      
-      // Fechar modal e mostrar feedback de sucesso
-      setShowWhatsAppModal(false);
-      showSuccess(`Conversa WhatsApp criada com ${selectedInstance.name}!`);
-      
-      // Navegar para a nova conversa
-      navigate(`/chat/${newConversation.id}`);
-      onClose(); // Fechar o modal principal
-      
-    } catch (error) {
-      console.error('❌ Erro inesperado ao criar conversa:', error);
-      showError('Erro inesperado ao criar conversa. Tente novamente.');
-    } finally {
-      setWhatsappLoading(false);
-    }
-  };
 
-  const handleOpenCall = () => {
-    console.log('🔔 Botão Ligar clicado - Verificando agentes disponíveis');
-    
-    if (callAgents.length === 0) {
-      console.log('⚠️ Nenhum agente de call encontrado');
-      showError('Nenhum agente de ligação configurado. Configure um agente primeiro.');
-      return;
-    }
-    
-    console.log('✅ Agentes encontrados:', callAgents.length);
-    setShowCallModal(true);
-  };
+        // Atualizar appointment com informações do Google Calendar
+        const { error: updateError } = await req.supabase
+          .from('appointments')
+          .update({
+            google_event_id: googleEvent.id,
+            google_meet_link: googleEvent.conferenceData?.entryPoints?.[0]?.uri || null
+          })
+          .eq('id', appointment.id);
 
-  const handleMakeCall = async (agentId: string) => {
-    if (!lead.phone) {
-      showError('Telefone do lead não encontrado');
-      return;
-    }
-
-    try {
-      setCallLoading(true);
-      
-      // Aqui você pode integrar com o sistema de chamadas
-      // Por exemplo, usar o vapiService ou navegar para a página de calls
-      console.log('📞 Iniciando chamada:', {
-        agentId,
-        phone: lead.phone,
-        leadId: lead.id
-      });
-      
-      // Navegar para a página de calls com dados pré-preenchidos
-      navigate('/callai', { 
-        state: { 
-          prefilledPhone: lead.phone,
-          prefilledAgentId: agentId,
-          leadId: lead.id,
-          leadName: lead.name
-        } 
-      });
-      
-      setShowCallModal(false);
-      onClose(); // Fechar o modal
-      
-    } catch (error: any) {
-      console.error('Erro ao iniciar chamada:', error);
-      showError(`Erro ao iniciar chamada: ${error.message}`);
-    } finally {
-      setCallLoading(false);
-    }
-  };
-
-  const tabs = [
-    { id: 'overview', label: 'Visão Geral', icon: User },
-    { id: 'activity', label: 'Atividade', icon: Clock },
-    { id: 'notes', label: 'Notas', icon: MessageSquare }
-  ];
-
-  const getPriorityColor = (priority: Lead['priority']) => {
-    switch (priority) {
-      case 'high': return 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 border-red-200 dark:border-red-700';
-      case 'medium': return 'bg-orange-100 dark:bg-orange-900/50 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-700';
-      case 'low': return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600';
-      default: return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600';
-    }
-  };
-
-  const getSourceColor = (source: string) => {
-    const colors: Record<string, string> = {
-      'Website': 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300',
-      'LinkedIn': 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300',
-      'WhatsApp': 'bg-green-100 dark:bg-green-900/50 text-green-700 dark:text-green-300',
-      'Cold Call': 'bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300',
-      'Email Campaign': 'bg-pink-100 dark:bg-pink-900/50 text-pink-700 dark:text-pink-300',
-      'Referral': 'bg-yellow-100 dark:bg-yellow-900/50 text-yellow-700 dark:text-yellow-300'
-    };
-    return colors[source] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
-  };
-
-  const renderTabContent = () => {
-    switch (activeTab) {
-      case 'overview':
-        return (
-          <div className="space-y-5">
-            {/* Quick Stats */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="p-4 bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 shadow-sm">
-                <div className="flex items-center gap-2 text-green-600 dark:text-green-400 mb-2">
-                  <DollarSign className="w-5 h-5" />
-                  <span className="text-sm font-semibold">Valor Potencial</span>
-                </div>
-                <p className="text-xl font-bold text-gray-900 dark:text-white">R$ {lead.value.toLocaleString()}</p>
-              </div>
-              
-              <div className="p-4 bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 shadow-sm">
-                <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 mb-2">
-                  <Clock className="w-5 h-5" />
-                  <span className="text-sm font-semibold">Último Contato</span>
-                </div>
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">{lead.lastContact}</p>
-              </div>
-            </div>
-
-            {/* Contact Information */}
-            <div className="bg-white dark:bg-gray-700 rounded-xl p-4 border border-gray-200 dark:border-gray-600 shadow-sm">
-              <h4 className="font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                <Mail className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                Informações de Contato
-              </h4>
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/50 rounded-lg flex items-center justify-center">
-                    <Mail className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-xs text-gray-600 dark:text-gray-400">Email</p>
-                    <p className="font-medium text-gray-900 dark:text-white truncate">{lead.email}</p>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-green-100 dark:bg-green-900/50 rounded-lg flex items-center justify-center">
-                    <Phone className="w-4 h-4 text-green-600 dark:text-green-400" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-xs text-gray-600 dark:text-gray-400">Telefone</p>
-                    <p className="font-medium text-gray-900 dark:text-white">{lead.phone}</p>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-purple-100 dark:bg-purple-900/50 rounded-lg flex items-center justify-center">
-                    <Building2 className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-xs text-gray-600 dark:text-gray-400">Empresa</p>
-                    <p className="font-medium text-gray-900 dark:text-white">{lead.company}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Tags */}
-            {lead.tags.length > 0 && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 rounded-xl p-4 border border-blue-200 dark:border-blue-700/50">
-                <h4 className="font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                  <Tag className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                  Tags
-                </h4>
-                <div className="flex flex-wrap gap-2">
-                  {lead.tags.map((tag, index) => (
-                    <span
-                      key={index}
-                      className="px-3 py-1 bg-blue-100 dark:bg-blue-800 text-blue-700 dark:text-blue-300 rounded-full text-sm font-medium border border-blue-200 dark:border-blue-600"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Campos Personalizados */}
-            {(customFields.length > 0 || customFieldsLoading) && (
-              <div className="bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600 p-4">
-                <CustomFieldRenderer
-                  fields={customFields}
-                  values={leadCustomFields}
-                  loading={customFieldsLoading}
-                  emptyMessage="Este lead ainda não possui campos personalizados preenchidos"
-                />
-              </div>
-            )}
-
-            {/* Quick Actions */}
-            <div className="bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-700 dark:to-gray-600 rounded-xl p-4 border border-gray-200 dark:border-gray-600">
-              <h4 className="font-semibold text-gray-900 dark:text-white mb-3">Ações Rápidas</h4>
-              <div className="grid grid-cols-2 gap-3">
-                <button 
-                  onClick={handleOpenCall}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 dark:bg-blue-700 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors shadow-sm"
-                >
-                  <Phone className="w-4 h-4" />
-                  <span className="text-sm font-medium">Ligar</span>
-                </button>
-                <button 
-                  onClick={() => {
-                    console.log('🔔 Botão WhatsApp clicado - onClick chamado');
-                    console.log('🔍 Debug - handleOpenWhatsApp existe:', typeof handleOpenWhatsApp);
-                    handleOpenWhatsApp();
-                  }}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-3 bg-green-600 dark:bg-green-700 text-white rounded-lg hover:bg-green-700 dark:hover:bg-green-600 transition-colors shadow-sm"
-                >
-                  <MessageSquare className="w-4 h-4" />
-                  <span className="text-sm font-medium">WhatsApp</span>
-                </button>
-                <button 
-                  onClick={() => {
-                    console.log('🔔 Botão Agendar clicado - Abrindo formulário inline');
-                    handleOpenAppointmentForm();
-                  }}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-3 bg-orange-600 dark:bg-orange-700 text-white rounded-lg hover:bg-orange-700 dark:hover:bg-orange-600 transition-colors shadow-sm"
-                >
-                  <Calendar className="w-4 h-4" />
-                  <span className="text-sm font-medium">Agendar Reunião</span>
-                </button>
-              </div>
-            </div>
-
-            {/* ✅ NOVO: Formulário de Agendamento Inline */}
-            {showAppointmentForm && (
-              <div 
-                ref={appointmentFormRef}
-                className="bg-white dark:bg-gray-700 rounded-xl border border-orange-200 dark:border-orange-700 shadow-lg overflow-hidden mt-4 scroll-mt-4"
-              >
-                <div className="bg-gradient-to-r from-orange-50 to-yellow-50 dark:from-orange-900/20 dark:to-yellow-900/20 px-4 py-3 border-b border-orange-200 dark:border-orange-700">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Calendar className="w-5 h-5 text-orange-600 dark:text-orange-400" />
-                      <h4 className="font-semibold text-gray-900 dark:text-white">🗓️ Criar Agendamento (INLINE)</h4>
-                    </div>
-                    <button 
-                      onClick={handleCloseAppointmentForm}
-                      className="p-1 hover:bg-orange-100 dark:hover:bg-orange-800 rounded-lg transition-colors"
-                    >
-                      <X className="w-4 h-4 text-gray-600 dark:text-gray-300" />
-                    </button>
-                  </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                    Agendamento será vinculado automaticamente ao lead {lead.name}
-                  </p>
-                </div>
-                
-                <div className="p-4 space-y-4">
-                  {/* Título */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Título *
-                    </label>
-                    <input
-                      type="text"
-                      value={appointmentForm.title}
-                      onChange={(e) => handleAppointmentFormChange('title', e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                      placeholder="Ex: Reunião de apresentação"
-                    />
-                  </div>
-
-                  {/* Data e Hora */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Início *
-                      </label>
-                      <input
-                        type="datetime-local"
-                        value={appointmentForm.start_time}
-                        onChange={(e) => handleAppointmentFormChange('start_time', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Fim *
-                      </label>
-                      <input
-                        type="datetime-local"
-                        value={appointmentForm.end_time}
-                        onChange={(e) => handleAppointmentFormChange('end_time', e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Descrição */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Descrição
-                    </label>
-                    <textarea
-                      value={appointmentForm.description}
-                      onChange={(e) => handleAppointmentFormChange('description', e.target.value)}
-                      rows={3}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                      placeholder="Detalhes do agendamento..."
-                    />
-                  </div>
-
-                  {/* Local */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Local
-                    </label>
-                    <input
-                      type="text"
-                      value={appointmentForm.location}
-                      onChange={(e) => handleAppointmentFormChange('location', e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
-                      placeholder="Ex: Escritório, Online, etc."
-                    />
-                  </div>
-
-                  {/* Google Meet */}
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="create_meet"
-                      checked={appointmentForm.create_meet}
-                      onChange={(e) => handleAppointmentFormChange('create_meet', e.target.checked)}
-                      className="w-4 h-4 text-orange-600 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 rounded focus:ring-orange-500"
-                    />
-                    <label htmlFor="create_meet" className="text-sm text-gray-700 dark:text-gray-300">
-                      Criar link do Google Meet automaticamente
-                    </label>
-                  </div>
-
-                  {/* Botões */}
-                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200 dark:border-gray-600">
-                    <button
-                      onClick={handleCloseAppointmentForm}
-                      className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition-colors"
-                    >
-                      Cancelar
-                    </button>
-                    <button
-                      onClick={handleCreateAppointment}
-                      disabled={appointmentLoading}
-                      className="px-4 py-2 bg-orange-600 dark:bg-orange-700 text-white rounded-lg hover:bg-orange-700 dark:hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                    >
-                      {appointmentLoading ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-                          Criando...
-                        </>
-                      ) : (
-                        <>
-                          <Calendar className="w-4 h-4" />
-                          Criar Agendamento
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-
-      case 'activity':
-        return (
-          <div className="space-y-4">
-            {/* Header da seção */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-                  <Activity className="w-4 h-4 text-white" />
-                </div>
-                <div>
-                  <h4 className="font-semibold text-gray-900 dark:text-white">Pipeline de Atividades</h4>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">Histórico completo do lead</p>
-                </div>
-              </div>
-              <button 
-                onClick={fetchActivities}
-                className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors border border-blue-200 dark:border-blue-700"
-              >
-                <Activity className="w-4 h-4" />
-                <span className="text-sm font-medium">Atualizar</span>
-              </button>
-            </div>
-            
-            {loading ? (
-              <div className="flex items-center justify-center p-12">
-                <div className="flex flex-col items-center gap-4">
-                  <div className="animate-spin rounded-full h-10 w-10 border-2 border-blue-600 border-t-transparent"></div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">Carregando atividades...</p>
-                </div>
-              </div>
-            ) : activities.length > 0 ? (
-              <div className="relative">
-                {/* Timeline line */}
-                <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gradient-to-b from-blue-500 via-purple-500 to-gray-300 dark:to-gray-600"></div>
-                
-                <div className="space-y-4">
-              {activities.map((activity, index) => {
-                    const IconComponent = getIconComponent(activity.icon);
-                    const isFirst = index === 0;
-                    const isLast = index === activities.length - 1;
-                    
-                    // Parse metadata para informações extras
-                    const metadata = typeof activity.metadata === 'string' 
-                      ? JSON.parse(activity.metadata) 
-                      : activity.metadata || {};
-                    
-                    const isCreationActivity = activity.activity_type === 'lead_created';
-                    const isAIGenerated = metadata.created_by_ai || metadata.created_from === 'ai_conversation';
-                    const isFromAds = metadata.ad_detection?.is_from_ads;
-                    const platform = metadata.ad_detection?.platform || 'WhatsApp';
-                    
-                return (
-                      <div key={activity.id} className="relative pl-16">
-                        {/* Timeline dot */}
-                        <div className={`absolute left-4 w-4 h-4 rounded-full border-2 border-white dark:border-gray-800 shadow-lg ${
-                          isFirst ? 'bg-gradient-to-br from-green-500 to-emerald-600' :
-                          isCreationActivity ? 'bg-gradient-to-br from-blue-500 to-indigo-600' :
-                          'bg-gradient-to-br from-gray-400 to-gray-500'
-                        }`}>
-                          {isFirst && (
-                            <div className="absolute inset-0 rounded-full bg-green-500 animate-ping opacity-20"></div>
-                          )}
-                        </div>
-                        
-                        {/* Activity card */}
-                        <div className={`bg-white dark:bg-gray-700 rounded-xl border shadow-sm transition-all duration-200 hover:shadow-md ${
-                          isCreationActivity ? 'border-blue-200 dark:border-blue-700 bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20' :
-                          isFirst ? 'border-green-200 dark:border-green-700 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20' :
-                          'border-gray-200 dark:border-gray-600'
-                        }`}>
-                          <div className="p-4">
-                            {/* Activity header */}
-                            <div className="flex items-start gap-3 mb-3">
-                              <div className={`p-2.5 rounded-lg ${activity.color} shadow-sm`}>
-                                <IconComponent className="w-5 h-5" />
-                    </div>
-                              
-                    <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <h5 className="font-semibold text-gray-900 dark:text-white">{activity.title}</h5>
-                                  
-                                  {/* Badge especial para criação */}
-                                  {isCreationActivity && (
-                                    <div className="flex items-center gap-1">
-                                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                                      <span className="text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/30 px-2 py-1 rounded-full">
-                                        Origem
-                                      </span>
-                                    </div>
-                                  )}
-                                  
-                                  {/* Badge de IA */}
-                                  {isAIGenerated && (
-                                    <div className="flex items-center gap-1 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 px-2 py-1 rounded-full">
-                                      <Bot className="w-3 h-3" />
-                                      <span className="text-xs font-medium">IA</span>
-                                    </div>
-                                  )}
-                                  
-                                  {/* Badge de plataforma */}
-                                  {isFromAds && (
-                                    <div className="flex items-center gap-1 bg-pink-100 dark:bg-pink-900/30 text-pink-700 dark:text-pink-400 px-2 py-1 rounded-full">
-                                      <div className="w-3 h-3 bg-gradient-to-br from-pink-500 to-purple-600 rounded-full"></div>
-                                      <span className="text-xs font-medium">{platform} Ads</span>
-                                    </div>
-                                  )}
-                                </div>
-                                
-                                <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
-                                  {activity.description}
-                                </p>
-                              </div>
-                            </div>
-                            
-                            {/* Metadata extras */}
-                            {metadata && Object.keys(metadata).length > 0 && (
-                              <div className="mt-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
-                                <div className="grid grid-cols-2 gap-3 text-sm">
-                                  {/* Informações do criador */}
-                                  {metadata.creator_name && (
-                                    <div className="flex items-center gap-2">
-                                      <User className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-                                      <span className="text-gray-700 dark:text-gray-300">
-                                        <span className="font-medium">Criado por:</span> {metadata.creator_name}
-                                      </span>
-                                    </div>
-                                  )}
-                                  
-                                  {/* Valor do lead */}
-                                  {metadata.lead_data?.estimated_value && (
-                                    <div className="flex items-center gap-2">
-                                      <DollarSign className="w-4 h-4 text-green-500 dark:text-green-400" />
-                                      <span className="text-gray-700 dark:text-gray-300">
-                                        <span className="font-medium">Valor:</span> R$ {metadata.lead_data.estimated_value.toLocaleString()}
-                                      </span>
-                                    </div>
-                                  )}
-                                  
-                                  {/* Origem do contato */}
-                                  {metadata.contact_data?.source && (
-                                    <div className="flex items-center gap-2">
-                                      <MapPin className="w-4 h-4 text-blue-500 dark:text-blue-400" />
-                                      <span className="text-gray-700 dark:text-gray-300">
-                                        <span className="font-medium">Origem:</span> {metadata.contact_data.source}
-                                      </span>
-                                    </div>
-                                  )}
-                                  
-                                  {/* Ferramenta usada */}
-                                  {metadata.tool_used && (
-                                    <div className="flex items-center gap-2">
-                                      <Activity className="w-4 h-4 text-purple-500 dark:text-purple-400" />
-                                      <span className="text-gray-700 dark:text-gray-300">
-                                        <span className="font-medium">Ferramenta:</span> {metadata.tool_used}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-                                
-                                {/* UTM info se existir */}
-                                {metadata.contact_data?.utm_info && (
-                                  <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
-                                    <h6 className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Informações de Campanha:</h6>
-                                    <div className="grid grid-cols-1 gap-2">
-                                      {metadata.contact_data.utm_info.utm_source && (
-                                        <div className="flex items-center gap-2 text-xs">
-                                          <span className="font-medium text-gray-600 dark:text-gray-400">Fonte:</span>
-                                          <span className="text-gray-700 dark:text-gray-300">{metadata.contact_data.utm_info.utm_source}</span>
-                                        </div>
-                                      )}
-                                      {metadata.contact_data.utm_info.utm_campaign && (
-                                        <div className="flex items-center gap-2 text-xs">
-                                          <span className="font-medium text-gray-600 dark:text-gray-400">Campanha:</span>
-                                          <span className="text-gray-700 dark:text-gray-300">{metadata.contact_data.utm_info.utm_campaign}</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                            
-                            {/* Footer com timestamp */}
-                            <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-200 dark:border-gray-600">
-                              <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                                <Clock className="w-3 h-3" />
-                                <span>{activity.duration_text}</span>
-                              </div>
-                              
-                              {isFirst && (
-                                <div className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium">
-                                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                                  <span>Mais recente</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-              </div>
-            ) : (
-              <div className="text-center p-12 bg-white dark:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-600">
-                <div className="w-16 h-16 bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Activity className="w-8 h-8 text-gray-400 dark:text-gray-500" />
-                </div>
-                <h6 className="font-medium text-gray-900 dark:text-white mb-2">Nenhuma atividade registrada</h6>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  As atividades aparecerão aqui conforme o lead progride no pipeline.
-                </p>
-              </div>
-            )}
-          </div>
-        );
-
-      case 'notes':
-        return (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h4 className="font-medium text-gray-900 dark:text-white">Notas</h4>
-              <button 
-                onClick={fetchNotes}
-                className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
-              >
-                Atualizar
-              </button>
-            </div>
-            
-            {loading ? (
-              <div className="flex items-center justify-center p-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-              </div>
-            ) : notes.length > 0 ? (
-            <div className="space-y-3">
-              {notes.map(note => (
-                  <div key={note.id} className="p-3 border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700">
-                    <p className="text-gray-900 dark:text-white mb-2">{note.content}</p>
-                    <div className="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
-                    <span>Por {note.author}</span>
-                                                <span>{note.formatted_time}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            ) : (
-              <div className="text-center p-8 text-gray-500 dark:text-gray-400">
-                <MessageSquare className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>Nenhuma nota registrada ainda.</p>
-              </div>
-            )}
-
-            <div className="border-t border-gray-200 dark:border-gray-600 pt-4">
-              <textarea
-                placeholder="Adicionar nova nota..."
-                rows={3}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              />
-              <div className="flex justify-end mt-2">
-                <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm">
-                  Salvar Nota
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-
-      default:
-        return null;
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        {/* Header Modernizado */}
-        <div className="p-5 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-800 dark:to-gray-700">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {/* Avatar principal */}
-              <div className={`w-14 h-14 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-lg bg-gradient-to-br ${
-                isAICreated ? 'from-blue-500 to-blue-600' : 
-                isManualCreated ? 'from-green-500 to-green-600' : 
-                'from-gray-500 to-gray-600'
-              }`}>
-                {getInitials(lead.name)}
-              </div>
-              
-              {/* Informações principais */}
-              <div className="flex-1">
-                <div className="flex items-center gap-3 mb-1">
-                  <h2 className="text-lg font-semibold text-gray-900 dark:text-white">{lead.name}</h2>
-                  <span className={`px-2 py-1 text-xs font-medium rounded-full ${getPriorityColor(lead.priority)}`}>
-                    {lead.priority === 'high' ? 'Alta' : lead.priority === 'medium' ? 'Média' : 'Baixa'}
-                  </span>
-                </div>
-                
-                <div className="flex items-center gap-2 mb-2">
-                  <Building2 className="w-3 h-3 text-gray-500 dark:text-gray-400" />
-                  <span className="text-sm text-gray-700 dark:text-gray-300 font-medium">{lead.company}</span>
-                </div>
-                
-                {/* Badges de origem */}
-                <div className="flex items-center gap-2 flex-wrap">
-                  {isWhatsAppSource && (
-                    <div className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full">
-                      <WhatsAppIcon />
-                      <span className="text-xs font-medium">WhatsApp</span>
-                    </div>
-                  )}
-                  
-                  {isAICreated ? (
-                    <div className="flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
-                      <Bot className="w-3 h-3" />
-                      <span className="text-xs font-medium">IA</span>
-                    </div>
-                  ) : isManualCreated && creatorData ? (
-                    <div className="flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 rounded-full">
-                      {creatorData.avatar_url ? (
-                        <img 
-                          src={creatorData.avatar_url} 
-                          alt={creatorData.name}
-                          className="w-3 h-3 rounded-full object-cover"
-                        />
-                      ) : (
-                        <div className={`w-3 h-3 rounded-full flex items-center justify-center text-white text-xs font-medium bg-gradient-to-br ${getAvatarGradient(lead.created_by || '')}`}>
-                          {getInitials(creatorData.name).charAt(0)}
-                        </div>
-                      )}
-                      <span className="text-xs font-medium">{creatorData.name.split(' ')[0]}</span>
-                    </div>
-                  ) : null}
-                  
-                  <span className={`px-2 py-1 text-xs font-medium rounded-full ${getSourceColor(lead.source)}`}>
-                    {lead.source}
-                  </span>
-                </div>
-              </div>
-            </div>
-            
-            {/* Botões de ação */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={onViewFullDetails}
-                className="inline-flex items-center gap-2 px-3 py-2 bg-white dark:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-500 transition-colors border border-gray-200 dark:border-gray-500 text-sm"
-              >
-                <ExternalLink className="w-4 h-4" />
-                Detalhes
-              </button>
-              <button
-                onClick={onEdit}
-                className="inline-flex items-center gap-2 px-3 py-2 bg-blue-600 dark:bg-blue-700 text-white rounded-lg hover:bg-blue-700 dark:hover:bg-blue-600 transition-colors text-sm"
-              >
-                <Edit2 className="w-4 h-4" />
-                Editar
-              </button>
-              <button
-                onClick={onClose}
-                className="p-2 hover:bg-white hover:bg-opacity-50 dark:hover:bg-gray-600 dark:hover:bg-opacity-50 rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-              </button>
-            </div>
-          </div>
+        if (updateError) {
+          console.error('❌ Erro ao atualizar appointment com dados do Google:', updateError);
+          googleEventInfo = {
+            integration_status: 'partial_success',
+            message: 'Evento criado no Google Calendar mas falha ao salvar referência',
+            google_event_id: googleEvent.id,
+            calendar_info: googleEventInfo.calendar_info
+          };
+        } else {
+          googleEventInfo = {
+            integration_status: 'success',
+            message: 'Evento criado com sucesso no Google Calendar',
+            google_event_id: googleEvent.id,
+            google_meet_link: googleEvent.conferenceData?.entryPoints?.[0]?.uri || null,
+            calendar_info: googleEventInfo.calendar_info
+          };
           
-          {/* Informações rápidas */}
-          <div className="flex items-center gap-4 mt-3 pt-3 border-t border-gray-200 dark:border-gray-600">
-            <div className="flex items-center gap-2">
-              <DollarSign className="w-4 h-4 text-green-600 dark:text-green-400" />
-              <span className="text-sm font-medium text-gray-900 dark:text-white">
-                R$ {lead.value.toLocaleString()}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-              <span className="text-sm text-gray-600 dark:text-gray-300">
-                {lead.lastContact}
-              </span>
-            </div>
-            {contactData && (
-              <div className="flex items-center gap-2">
-                {contactData.avatar_url ? (
-                  <img 
-                    src={contactData.avatar_url} 
-                    alt={contactData.full_name}
-                    className="w-4 h-4 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-xs font-medium bg-gradient-to-br ${getAvatarGradient(lead.contact_id || '')}`}>
-                    {getInitials(contactData.full_name).charAt(0)}
-                  </div>
-                )}
-                <span className="text-sm text-gray-600 dark:text-gray-300">{contactData.full_name}</span>
-              </div>
-            )}
-          </div>
-        </div>
+          // Atualizar dados do appointment retornado
+          appointment.google_event_id = googleEvent.id;
+          appointment.google_meet_link = googleEvent.conferenceData?.entryPoints?.[0]?.uri || null;
+        }
 
-        {/* Navigation to Full Details */}
-        <div className="px-5 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border-b border-gray-200 dark:border-gray-700">
-          <button
-            onClick={onViewFullDetails}
-            className="flex items-center gap-2 text-blue-700 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors group"
-          >
-            <span className="text-sm font-medium">Ver página completa do lead</span>
-            <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-          </button>
-        </div>
+        console.log(`✅ Evento criado no Google Calendar: ${googleEvent.id}`);
+        
+      } catch (googleError) {
+        console.error('❌ Erro ao criar evento no Google Calendar:', googleError);
+        googleEventInfo = {
+          integration_status: 'failed',
+          message: `Erro ao criar no Google Calendar: ${googleError.message}`,
+          calendar_info: googleEventInfo.calendar_info
+        };
+      }
+    } else {
+      googleEventInfo.message = 'Integração sem token de acesso válido. Reconecte o Google Calendar';
+    }
 
-        {/* Tabs Modernizadas */}
-        <div className="flex border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-          {tabs.map(tab => {
-            const Icon = tab.icon;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-6 py-3 border-b-2 transition-all duration-200 relative ${
-                  activeTab === tab.id
-                    ? 'border-blue-500 text-blue-600 dark:text-blue-400 bg-white dark:bg-gray-700 shadow-sm'
-                    : 'border-transparent text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700'
-                }`}
-              >
-                <Icon className="w-4 h-4" />
-                <span className="font-medium">{tab.label}</span>
-                {activeTab === tab.id && (
-                  <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500 rounded-full" />
-                )}
-              </button>
-            );
-          })}
-        </div>
+    return res.status(201).json({
+      success: true,
+      message: 'Agendamento criado com sucesso',
+      appointment: {
+        id: appointment.id,
+        title: appointment.title,
+        description: appointment.description,
+        start_time: appointment.start_time,
+        end_time: appointment.end_time,
+        location: appointment.location,
+        status: appointment.status,
+        attendees: appointment.attendees,
+        lead_id: appointment.lead_id,
+        google_calendar_id: appointment.google_calendar_id,
+        create_meet: appointment.create_meet,
+        created_at: appointment.created_at
+      },
+      google_calendar: googleEventInfo,
+      timezone: companyTimezone,
+      company: {
+        id: company.id,
+        name: company.name
+      }
+    });
 
-        {/* Content */}
-        <div className="p-5 bg-gray-50 dark:bg-gray-800 min-h-80">
-          {renderTabContent()}
-        </div>
-      </div>
+  } catch (error) {
+    console.error('❌ Erro em /schedule:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
 
-      {/* ✅ NOVO: Modal de Seleção de Agente para Ligação */}
-      {showCallModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-md w-full mx-4">
-            <div className="p-6 border-b border-gray-200 dark:border-gray-700">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center">
-                    <Phone className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Fazer Ligação</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Selecione um agente para a ligação</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setShowCallModal(false)}
-                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                >
-                  <X className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-                </button>
-              </div>
-            </div>
+// ✅ 3. ENDPOINT: Listar agendamentos (MODIFICADO - aceita calendar_id como filtro)
+router.get('/appointments', async (req, res) => {
+  try {
+    const { company } = req;
+    const { 
+      date,
+      start_date,
+      end_date,
+      status,
+      lead_id,
+      calendar_id,
+      limit = 50,
+      page = 1
+    } = req.query;
+
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
+    let query = req.supabase
+      .from('appointments')
+      .select(`
+        id, title, description, start_time, end_time, location,
+        status, attendees, all_day, google_event_id, google_meet_link,
+        lead_id, google_calendar_id, create_meet, created_at, updated_at, created_by
+      `)
+      .eq('company_id', company.id)
+      .order('start_time', { ascending: true });
+
+    // ✅ CORRIGIDO: Filtro por calendar_id específico
+    if (calendar_id) {
+      // Validar se calendar_id é válido para a empresa
+      const calendarValidation = await validateCalendarId(calendar_id, company.id, req.supabase);
+      if (!calendarValidation.valid) {
+        return res.status(400).json({
+          error: 'Agenda inválida',
+          message: calendarValidation.error
+        });
+      }
+      query = query.eq('google_calendar_id', calendarValidation.integration.calendar_id);
+    }
+
+    // Filtros de data
+    if (date) {
+      if (!isValidDate(date)) {
+        return res.status(400).json({
+          error: 'Data inválida',
+          message: 'Use formato YYYY-MM-DD'
+        });
+      }
+      const startOfDay = formatToISO(date, '00:00', companyTimezone);
+      const endOfDay = formatToISO(date, '23:59', companyTimezone);
+      query = query.gte('start_time', startOfDay).lte('start_time', endOfDay);
+    } else if (start_date && end_date) {
+      if (!isValidDate(start_date) || !isValidDate(end_date)) {
+        return res.status(400).json({
+          error: 'Datas inválidas',
+          message: 'Use formato YYYY-MM-DD'
+        });
+      }
+      query = query.gte('start_time', start_date).lte('end_time', end_date);
+    }
+
+    // Outros filtros
+    if (status) {
+      query = query.eq('status', status);
+    }
+    if (lead_id) {
+      query = query.eq('lead_id', lead_id);
+    }
+
+    // Paginação
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    query = query.range(offset, offset + parseInt(limit) - 1);
+
+    const { data: appointments, error, count } = await query;
+
+    if (error) {
+      console.error('❌ Erro ao buscar appointments:', error);
+      return res.status(500).json({
+        error: 'Erro interno do servidor',
+        details: error.message
+      });
+    }
+
+    // ✅ CORRIGIDO: Buscar informações das agendas, leads e usuários separadamente
+    let calendarInfoMap = {};
+    let leadsMap = {};
+    let usersMap = {};
+    
+    if (appointments.length > 0) {
+      // Buscar informações únicas das agendas usadas (pelos google_calendar_id)
+      const uniqueGoogleCalendarIds = [...new Set(appointments.map(apt => apt.google_calendar_id).filter(Boolean))];
+      
+      if (uniqueGoogleCalendarIds.length > 0) {
+        const { data: calendars, error: calendarsError } = await req.supabase
+          .from('google_calendar_integrations')
+          .select('id, calendar_name, calendar_id')
+          .eq('company_id', company.id)
+          .in('calendar_id', uniqueGoogleCalendarIds);
+
+        if (!calendarsError && calendars) {
+          calendarInfoMap = calendars.reduce((map, cal) => {
+            map[cal.calendar_id] = {
+              id: cal.id,
+              name: cal.calendar_name,
+              calendar_id: cal.calendar_id
+            };
+            return map;
+          }, {});
+        }
+      }
+
+      // Buscar informações dos leads
+      const uniqueLeadIds = [...new Set(appointments.map(apt => apt.lead_id).filter(Boolean))];
+      if (uniqueLeadIds.length > 0) {
+        const { data: leads, error: leadsError } = await req.supabase
+          .from('leads')
+          .select('id, title, status')
+          .eq('company_id', company.id)
+          .in('id', uniqueLeadIds);
+
+        if (!leadsError && leads) {
+          leadsMap = leads.reduce((map, lead) => {
+            map[lead.id] = {
+              id: lead.id,
+              title: lead.title,
+              status: lead.status
+            };
+            return map;
+          }, {});
+        }
+      }
+
+      // Buscar informações dos usuários criadores
+      const uniqueUserIds = [...new Set(appointments.map(apt => apt.created_by).filter(Boolean))];
+      if (uniqueUserIds.length > 0) {
+        const { data: users, error: usersError } = await req.supabase
+          .from('users')
+          .select('id, first_name, last_name, full_name')
+          .eq('company_id', company.id)
+          .in('id', uniqueUserIds);
+
+        if (!usersError && users) {
+          usersMap = users.reduce((map, user) => {
+            map[user.id] = {
+              id: user.id,
+              name: user.full_name || `${user.first_name} ${user.last_name}`.trim()
+            };
+            return map;
+          }, {});
+        }
+      }
+    }
+
+    // Formatar resposta usando os mapas separados
+    const formattedAppointments = appointments.map(apt => ({
+      id: apt.id,
+      title: apt.title,
+      description: apt.description,
+      start_time: apt.start_time,
+      end_time: apt.end_time,
+      location: apt.location,
+      status: apt.status,
+      attendees: apt.attendees,
+      all_day: apt.all_day,
+      google_event_id: apt.google_event_id,
+      google_meet_link: apt.google_meet_link,
+      calendar_info: apt.google_calendar_id ? calendarInfoMap[apt.google_calendar_id] || {
+        id: "unknown",
+        name: "Agenda não encontrada", 
+        calendar_id: apt.google_calendar_id
+      } : null,
+      create_meet: apt.create_meet,
+      lead: apt.lead_id ? leadsMap[apt.lead_id] || null : null,
+      created_by: apt.created_by ? usersMap[apt.created_by] || null : null,
+      created_at: apt.created_at,
+      updated_at: apt.updated_at
+    }));
+
+    return res.json({
+      success: true,
+      appointments: formattedAppointments,
+      pagination: {
+        total: count || formattedAppointments.length,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        has_more: formattedAppointments.length === parseInt(limit)
+      },
+      filters: {
+        date,
+        start_date,
+        end_date,
+        status,
+        lead_id,
+        calendar_id
+      },
+      timezone: companyTimezone,
+      company: {
+        id: company.id,
+        name: company.name
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro em /appointments:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+// ✅ 4. ENDPOINT: Cancelar/Editar agendamento (MODIFICADO - mantém calendar_id)
+router.put('/appointments/:id', async (req, res) => {
+  try {
+    const { company } = req;
+    const { id } = req.params;
+    const {
+      title,
+      description,
+      start_time,
+      end_time,
+      location,
+      attendees,
+      status,
+      create_google_meet,
+      all_day,
+      calendar_id // ✅ NOVO: Permitir trocar de agenda
+    } = req.body;
+
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
+    // Verificar se appointment existe
+    const { data: existingAppointment, error: findError } = await req.supabase
+      .from('appointments')
+      .select('*')
+      .eq('id', id)
+      .eq('company_id', company.id)
+      .single();
+
+    if (findError || !existingAppointment) {
+      return res.status(404).json({
+        error: 'Agendamento não encontrado',
+        message: 'O agendamento não existe ou não pertence à empresa'
+      });
+    }
+
+    // ✅ CORRIGIDO: Se calendar_id foi fornecido, validar se é válido
+    let targetGoogleCalendarId = existingAppointment.google_calendar_id;
+    let calendarValidation = null;
+    
+    if (calendar_id) {
+      calendarValidation = await validateCalendarId(calendar_id, company.id, req.supabase);
+      if (!calendarValidation.valid) {
+        return res.status(400).json({
+          error: 'Agenda inválida',
+          message: calendarValidation.error
+        });
+      }
+      // Se está mudando de agenda, atualizar o target
+      if (calendarValidation.integration.calendar_id !== existingAppointment.google_calendar_id) {
+        targetGoogleCalendarId = calendarValidation.integration.calendar_id;
+      }
+    }
+
+    // Validar datas se fornecidas
+    if (start_time && !isValidDate(start_time)) {
+      return res.status(400).json({
+        error: 'start_time inválido',
+        message: 'Use formato ISO 8601'
+      });
+    }
+
+    if (end_time && !isValidDate(end_time)) {
+      return res.status(400).json({
+        error: 'end_time inválido', 
+        message: 'Use formato ISO 8601'
+      });
+    }
+
+    // Verificar se end_time é após start_time (se ambos fornecidos)
+    const newStartTime = start_time || existingAppointment.start_time;
+    const newEndTime = end_time || existingAppointment.end_time;
+    
+    if (new Date(newEndTime) <= new Date(newStartTime)) {
+      return res.status(400).json({
+        error: 'Horário inválido',
+        message: 'Horário de fim deve ser posterior ao de início'
+      });
+    }
+
+    // ✅ CORRIGIDO: Verificar conflitos na agenda específica (se mudando horário ou agenda)
+    if (start_time || end_time || calendar_id) {
+      const { data: conflicts, error: conflictError } = await req.supabase
+        .from('appointments')
+        .select('id, title, start_time, end_time')
+        .eq('company_id', company.id)
+        .eq('google_calendar_id', targetGoogleCalendarId)
+        .neq('id', id) // Excluir o próprio appointment
+        .neq('status', 'cancelled')
+        .or(`and(start_time.lte.${newStartTime},end_time.gte.${newStartTime}),and(start_time.lte.${newEndTime},end_time.gte.${newEndTime}),and(start_time.gte.${newStartTime},end_time.lte.${newEndTime})`);
+
+      if (conflictError) {
+        console.error('❌ Erro ao verificar conflitos:', conflictError);
+        return res.status(500).json({
+          error: 'Erro ao verificar conflitos',
+          details: conflictError.message
+        });
+      }
+
+      if (conflicts && conflicts.length > 0) {
+        return res.status(409).json({
+          error: 'Conflito de horário',
+          message: 'Já existe um agendamento neste horário na agenda especificada',
+          conflicts: conflicts.map(c => ({
+            appointment_id: c.id,
+            title: c.title,
+            start_time: c.start_time,
+            end_time: c.end_time
+          }))
+        });
+      }
+    }
+
+    // Preparar dados para atualização
+    const updateData = {};
+    if (title !== undefined) updateData.title = title;
+    if (description !== undefined) updateData.description = description;
+    if (start_time !== undefined) updateData.start_time = start_time;
+    if (end_time !== undefined) updateData.end_time = end_time;
+    if (location !== undefined) updateData.location = location;
+    if (status !== undefined) updateData.status = status;
+    if (create_google_meet !== undefined) updateData.create_meet = create_google_meet;
+    if (all_day !== undefined) updateData.all_day = all_day;
+    if (calendar_id !== undefined) updateData.google_calendar_id = targetGoogleCalendarId;
+    
+    if (attendees !== undefined) {
+      updateData.attendees = Array.isArray(attendees) 
+        ? attendees.map(email => typeof email === 'string' 
+            ? { email, displayName: email.split('@')[0] }
+            : email)
+        : [];
+    }
+
+    // Atualizar appointment
+    const { data: updatedAppointment, error: updateError } = await req.supabase
+      .from('appointments')
+      .update(updateData)
+      .eq('id', id)
+      .eq('company_id', company.id)
+      .select('*')
+      .single();
+
+    if (updateError) {
+      console.error('❌ Erro ao atualizar appointment:', updateError);
+      return res.status(500).json({
+        error: 'Erro ao atualizar agendamento',
+        details: updateError.message
+      });
+    }
+
+    console.log(`✅ Appointment ${id} atualizado`);
+
+    // ✅ NOVO: Atualizar evento no Google Calendar se houver google_event_id
+    let googleEventInfo = {
+      integration_status: 'not_attempted',
+      google_event_id: existingAppointment.google_event_id,
+      message: 'Sincronização com Google Calendar não configurada',
+      calendar_changed: !!calendar_id
+    };
+
+    if (existingAppointment.google_event_id && targetGoogleCalendarId) {
+      try {
+        // Buscar integração da agenda alvo usando o google_calendar_id
+        const { data: targetIntegration, error: integrationError } = await req.supabase
+          .from('google_calendar_integrations')
+          .select('*')
+          .eq('company_id', company.id)
+          .eq('calendar_id', targetGoogleCalendarId)
+          .eq('is_active', true)
+          .eq('status', 'connected')
+          .single();
+        
+        if (!integrationError && targetIntegration && targetIntegration.access_token) {
+          console.log(`🔄 Atualizando evento no Google Calendar...`);
+          
+          // Se mudou de agenda, precisa deletar da agenda antiga e criar na nova
+          if (targetGoogleCalendarId !== existingAppointment.google_calendar_id) {
+            // TODO: Implementar mudança entre agendas (deletar + criar)
+            googleEventInfo = {
+              integration_status: 'pending',
+              google_event_id: existingAppointment.google_event_id,
+              message: 'Mudança entre agendas será processada em background',
+              calendar_changed: true
+            };
+          } else {
+            // Atualizar evento na mesma agenda
+            const googleEventUpdates = {};
+            if (title !== undefined) googleEventUpdates.summary = title;
+            if (description !== undefined) googleEventUpdates.description = description;
+            if (location !== undefined) googleEventUpdates.location = location;
+            if (start_time !== undefined) {
+              googleEventUpdates.start = {
+                dateTime: start_time,
+                timeZone: targetIntegration.timezone || 'America/Sao_Paulo'
+              };
+            }
+            if (end_time !== undefined) {
+              googleEventUpdates.end = {
+                dateTime: end_time,
+                timeZone: targetIntegration.timezone || 'America/Sao_Paulo'
+              };
+            }
+            if (attendees !== undefined) {
+              googleEventUpdates.attendees = updateData.attendees.map(att => ({ email: att.email }));
+            }
+
+            // Fazer chamada para API do Google Calendar
+            const url = `https://www.googleapis.com/calendar/v3/calendars/${targetIntegration.calendar_id}/events/${existingAppointment.google_event_id}`;
             
-            <div className="p-6">
-              <div className="mb-4">
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-1">
-                  <strong>Lead:</strong> {lead.name}
-                </p>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  <strong>Telefone:</strong> {lead.phone}
-                </p>
-              </div>
-              
-              {callAgents.length > 0 ? (
-                <div className="space-y-3">
-                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                    Agentes Disponíveis:
-                  </h4>
-                  {callAgents.map(agent => (
-                    <button
-                      key={agent.id}
-                      onClick={() => handleMakeCall(agent.id)}
-                      disabled={callLoading}
-                      className="w-full flex items-center gap-3 p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:border-blue-200 dark:hover:border-blue-700 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400">
-                        <Bot className="w-5 h-5" />
-                      </div>
-                      <div className="flex-1">
-                        <h4 className="font-medium text-gray-900 dark:text-white">{agent.name}</h4>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Agente de Ligações</p>
-                      </div>
-                      {callLoading && (
-                        <div className="animate-spin rounded-full h-5 w-5 border-2 border-blue-600 border-t-transparent"></div>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center p-6">
-                  <AlertTriangle className="w-12 h-12 text-orange-400 mx-auto mb-3" />
-                  <h4 className="font-medium text-gray-900 dark:text-white mb-2">Nenhum agente configurado</h4>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                    Você precisa configurar um agente de ligação primeiro.
-                  </p>
-                  <button 
-                    onClick={() => {
-                      setShowCallModal(false);
-                      window.open('/callai', '_blank');
-                    }}
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm"
-                  >
-                    <Bot className="w-4 h-4" />
-                    Configurar Agente
-                  </button>
-                </div>
-              )}
-              
-              <div className="flex justify-end mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
-                <button
-                  onClick={() => setShowCallModal(false)}
-                  className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition-colors"
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+            const response = await fetch(url, {
+              method: 'PATCH',
+              headers: {
+                'Authorization': `Bearer ${targetIntegration.access_token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(googleEventUpdates)
+            });
 
-      {/* ✅ NOVO: Modal de Seleção de Instância WhatsApp */}
-      {showWhatsAppModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-md w-full mx-4">
-            <div className="p-6 border-b border-gray-200 dark:border-gray-700">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center">
-                    <MessageSquare className="w-5 h-5 text-green-600 dark:text-green-400" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Iniciar Conversa WhatsApp</h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Selecione uma instância para conversar</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setShowWhatsAppModal(false)}
-                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-                >
-                  <X className="w-5 h-5 text-gray-600 dark:text-gray-300" />
-                </button>
-              </div>
-            </div>
-            
-            <div className="p-6">
-              <div className="mb-4">
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-1">
-                  <strong>Lead:</strong> {lead.name}
-                </p>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-1">
-                  <strong>Empresa:</strong> {lead.company}
-                </p>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  <strong>Telefone:</strong> {lead.phone}
-                </p>
-              </div>
-              
-              {whatsappLoading ? (
-                <div className="text-center p-6">
-                  <div className="animate-spin rounded-full h-8 w-8 border-2 border-green-600 border-t-transparent mx-auto mb-3"></div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">
-                    Buscando instâncias WhatsApp...
-                  </p>
-                </div>
-              ) : whatsappInstances.length > 0 ? (
-                <div className="space-y-3">
-                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                    Instâncias Disponíveis:
-                  </h4>
-                  {whatsappInstances.map(instance => (
-                    <button
-                      key={instance.id}
-                      onClick={() => handleCreateWhatsAppConversation(instance.id)}
-                      disabled={whatsappLoading}
-                      className="w-full flex items-center gap-3 p-3 border border-gray-200 dark:border-gray-600 rounded-lg hover:bg-green-50 dark:hover:bg-green-900/20 hover:border-green-200 dark:hover:border-green-700 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <div className="w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center">
-                        <div className="w-5 h-5 bg-white rounded-full flex items-center justify-center border border-gray-200">
-                          <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            xmlns="http://www.w3.org/2000/svg"
-                            className="text-green-500"
-                          >
-                            <path
-                              d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893A11.821 11.821 0 0020.893 3.405"
-                              fill="currentColor"
-                            />
-                          </svg>
-                        </div>
-                      </div>
-                      <div className="flex-1">
-                        <h4 className="font-medium text-gray-900 dark:text-white">{instance.name}</h4>
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
-                            instance.connection_status === 'connected'
-                              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                              : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
-                          }`}>
-                            <div className={`w-2 h-2 rounded-full ${
-                              instance.connection_status === 'connected' ? 'bg-green-500' : 'bg-orange-500'
-                            }`}></div>
-                            {instance.connection_status === 'connected' ? 'Conectado' : 'Desconectado'}
-                          </span>
-                        </div>
-                      </div>
-                      <ChevronRight className="w-5 h-5 text-gray-400" />
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center p-6">
-                  <AlertTriangle className="w-12 h-12 text-orange-400 mx-auto mb-3" />
-                  <h4 className="font-medium text-gray-900 dark:text-white mb-2">Nenhuma instância encontrada</h4>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                    Configure uma instância WhatsApp para iniciar conversas.
-                  </p>
-                  <button 
-                    onClick={() => {
-                      setShowWhatsAppModal(false);
-                      window.open('/whatsapp', '_blank');
-                    }}
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm"
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    Configurar WhatsApp
-                  </button>
-                </div>
-              )}
-              
-              <div className="flex justify-end mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
-                <button
-                  onClick={() => setShowWhatsAppModal(false)}
-                  className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition-colors"
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+            if (response.ok) {
+              const updatedGoogleEvent = await response.json();
+              googleEventInfo = {
+                integration_status: 'success',
+                google_event_id: updatedGoogleEvent.id,
+                message: 'Evento atualizado com sucesso no Google Calendar',
+                calendar_changed: false
+              };
+              console.log(`✅ Evento atualizado no Google Calendar: ${updatedGoogleEvent.id}`);
+            } else {
+              const errorText = await response.text();
+              console.error('❌ Erro ao atualizar evento no Google:', errorText);
+              googleEventInfo = {
+                integration_status: 'failed',
+                google_event_id: existingAppointment.google_event_id,
+                message: `Erro ao atualizar no Google Calendar: ${response.status}`,
+                calendar_changed: false
+              };
+            }
+          }
+        } else {
+          googleEventInfo.message = 'Integração sem token de acesso válido. Reconecte o Google Calendar';
+        }
+      } catch (googleError) {
+        console.error('❌ Erro ao atualizar evento no Google Calendar:', googleError);
+        googleEventInfo = {
+          integration_status: 'failed',
+          google_event_id: existingAppointment.google_event_id,
+          message: `Erro ao atualizar no Google Calendar: ${googleError.message}`,
+          calendar_changed: !!calendar_id
+        };
+      }
+    }
 
-      {/* ✅ NOVO: Toast Notifications */}
-      <Toast
-        type={toast.type}
-        message={toast.message}
-        isVisible={toast.isVisible}
-        onClose={hideToast}
-      />
-    </div>
-  );
-};
+    return res.json({
+      success: true,
+      message: 'Agendamento atualizado com sucesso',
+      appointment: {
+        id: updatedAppointment.id,
+        title: updatedAppointment.title,
+        description: updatedAppointment.description,
+        start_time: updatedAppointment.start_time,
+        end_time: updatedAppointment.end_time,
+        location: updatedAppointment.location,
+        status: updatedAppointment.status,
+        attendees: updatedAppointment.attendees,
+        lead_id: updatedAppointment.lead_id,
+        google_calendar_id: updatedAppointment.google_calendar_id,
+        create_meet: updatedAppointment.create_meet,
+        google_event_id: updatedAppointment.google_event_id,
+        google_meet_link: updatedAppointment.google_meet_link,
+        updated_at: updatedAppointment.updated_at
+      },
+      google_calendar: googleEventInfo,
+      timezone: companyTimezone,
+      company: {
+        id: company.id,
+        name: company.name
+      }
+    });
 
-export default PipelineLeadDetailsModal;
+  } catch (error) {
+    console.error('❌ Erro em PUT /appointments/:id:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+// ✅ 5. ENDPOINT ADICIONAL: Deletar agendamento (sem modificação necessária)
+router.delete('/appointments/:id', async (req, res) => {
+  try {
+    const { company } = req;
+    const { id } = req.params;
+
+    // Verificar se appointment existe
+    const { data: existingAppointment, error: findError } = await req.supabase
+      .from('appointments')
+      .select('*')
+      .eq('id', id)
+      .eq('company_id', company.id)
+      .single();
+
+    if (findError || !existingAppointment) {
+      return res.status(404).json({
+        error: 'Agendamento não encontrado',
+        message: 'O agendamento não existe ou não pertence à empresa'
+      });
+    }
+
+    // Deletar appointment
+    const { error: deleteError } = await req.supabase
+      .from('appointments')
+      .delete()
+      .eq('id', id)
+      .eq('company_id', company.id);
+
+    if (deleteError) {
+      console.error('❌ Erro ao deletar appointment:', deleteError);
+      return res.status(500).json({
+        error: 'Erro ao deletar agendamento',
+        details: deleteError.message
+      });
+    }
+
+    console.log(`✅ Appointment ${id} deletado`);
+
+    // ✅ CORRIGIDO: Deletar evento do Google Calendar se houver google_event_id
+    let googleEventInfo = null;
+    if (existingAppointment.google_event_id && existingAppointment.google_calendar_id) {
+      try {
+        console.log('🔄 Deletando evento do Google Calendar...');
+        
+        // Buscar integração da agenda usando google_calendar_id
+        const { data: integration, error: integrationError } = await req.supabase
+          .from('google_calendar_integrations')
+          .select('*')
+          .eq('company_id', company.id)
+          .eq('calendar_id', existingAppointment.google_calendar_id)
+          .eq('is_active', true)
+          .eq('status', 'connected')
+          .single();
+        
+        if (!integrationError && integration && integration.access_token) {
+          // Fazer chamada para API do Google Calendar
+          const url = `https://www.googleapis.com/calendar/v3/calendars/${integration.calendar_id}/events/${existingAppointment.google_event_id}`;
+          
+          const response = await fetch(url, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${integration.access_token}`,
+              'Content-Type': 'application/json',
+            }
+          });
+
+          if (response.ok) {
+            googleEventInfo = {
+              integration_status: 'success',
+              google_event_id: existingAppointment.google_event_id,
+              message: 'Evento deletado com sucesso do Google Calendar',
+              google_calendar_id: existingAppointment.google_calendar_id
+            };
+            console.log(`✅ Evento deletado do Google Calendar: ${existingAppointment.google_event_id}`);
+          } else if (response.status === 410) {
+            // Erro 410: Resource já foi deletado
+            googleEventInfo = {
+              integration_status: 'already_deleted',
+              google_event_id: existingAppointment.google_event_id,
+              message: 'Evento já havia sido deletado do Google Calendar',
+              google_calendar_id: existingAppointment.google_calendar_id
+            };
+            console.log('ℹ️ Evento já havia sido deletado no Google Calendar');
+          } else {
+            const errorText = await response.text();
+            console.error('❌ Erro ao deletar evento do Google:', errorText);
+            googleEventInfo = {
+              integration_status: 'failed',
+              google_event_id: existingAppointment.google_event_id,
+              message: `Erro ao deletar do Google Calendar: ${response.status}`,
+              google_calendar_id: existingAppointment.google_calendar_id
+            };
+          }
+        } else {
+          googleEventInfo = {
+            integration_status: 'skipped',
+            google_event_id: existingAppointment.google_event_id,
+            message: 'Integração sem token de acesso válido. Evento não foi deletado do Google Calendar',
+            google_calendar_id: existingAppointment.google_calendar_id
+          };
+        }
+      } catch (googleError) {
+        console.error('❌ Erro ao deletar evento do Google Calendar:', googleError);
+        googleEventInfo = {
+          integration_status: 'failed',
+          google_event_id: existingAppointment.google_event_id,
+          message: `Erro ao deletar do Google Calendar: ${googleError.message}`,
+          google_calendar_id: existingAppointment.google_calendar_id
+        };
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'Agendamento deletado com sucesso',
+      deleted_appointment: {
+        id: existingAppointment.id,
+        title: existingAppointment.title,
+        start_time: existingAppointment.start_time,
+        end_time: existingAppointment.end_time,
+        google_calendar_id: existingAppointment.google_calendar_id
+      },
+      google_calendar: googleEventInfo,
+      timezone: await getCompanyTimezone(company.id, req.supabase),
+      company: {
+        id: company.id,
+        name: company.name
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro em DELETE /appointments/:id:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+// ✅ 6. ENDPOINT: Listar Integrações do Google Calendar (sem modificação necessária)
+router.get('/integrations', async (req, res) => {
+  try {
+    const { company } = req;
+
+    // Obter todas as integrações do Google Calendar da empresa
+    const { data: integrations, error } = await req.supabase
+      .from('google_calendar_integrations')
+      .select(`
+        id, calendar_id, calendar_name, status, is_active,
+        timezone, auto_create_meet, sync_enabled, 
+        created_at, updated_at, last_sync_at,
+        users!google_calendar_integrations_user_id_fkey(
+          id, first_name, last_name, full_name, email
+        )
+      `)
+      .eq('company_id', company.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Erro ao buscar integrações:', error);
+      return res.status(500).json({
+        error: 'Erro interno do servidor',
+        details: error.message
+      });
+    }
+
+    // Obter timezone da empresa
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
+    // Contar integrações por status
+    const statusCount = {
+      connected: integrations.filter(i => i.status === 'connected' && i.is_active).length,
+      disconnected: integrations.filter(i => i.status === 'disconnected').length,
+      error: integrations.filter(i => i.status === 'error').length,
+      inactive: integrations.filter(i => !i.is_active).length,
+      total: integrations.length
+    };
+
+    // Formatar resposta
+    const formattedIntegrations = integrations.map(integration => ({
+      id: integration.id,
+      calendar_id: integration.calendar_id,
+      calendar_name: integration.calendar_name || `Agenda ${integration.calendar_id}`,
+      status: integration.status,
+      is_active: integration.is_active,
+      timezone: integration.timezone || companyTimezone,
+      auto_create_meet: integration.auto_create_meet,
+      sync_enabled: integration.sync_enabled,
+      user: integration.users ? {
+        id: integration.users.id,
+        name: integration.users.full_name || `${integration.users.first_name} ${integration.users.last_name}`.trim(),
+        email: integration.users.email
+      } : null,
+      created_at: integration.created_at,
+      updated_at: integration.updated_at,
+      last_sync_at: integration.last_sync_at
+    }));
+
+    return res.json({
+      success: true,
+      message: `${statusCount.total} integração(ões) encontrada(s)`,
+      data: {
+        integrations: formattedIntegrations,
+        summary: {
+          total_integrations: statusCount.total,
+          active_integrations: statusCount.connected,
+          status_breakdown: statusCount
+        },
+        company: {
+          id: company.id,
+          name: company.name,
+          timezone: companyTimezone
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro em GET /integrations:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+// ✅ 7. ENDPOINT: Verificar Status de Múltiplas Integrações (sem modificação necessária)
+router.get('/integrations/status', async (req, res) => {
+  try {
+    const { company } = req;
+
+    const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
+    const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
+
+    return res.json({
+      success: true,
+      data: {
+        has_integration: googleIntegration.hasIntegration,
+        total_active: googleIntegration.hasIntegration ? googleIntegration.integrations.length : 0,
+        primary_calendar: googleIntegration.hasIntegration ? 
+          (googleIntegration.primary.calendar_name || googleIntegration.primary.calendar_id) : null,
+        integrations_summary: googleIntegration.hasIntegration ? 
+          googleIntegration.integrations.map(integration => ({
+            id: integration.id,
+            calendar_name: integration.calendar_name || integration.calendar_id,
+            status: integration.status,
+            user_id: integration.user_id
+          })) : [],
+        error: googleIntegration.error || null,
+        timezone: companyTimezone,
+        company: {
+          id: company.id,
+          name: company.name
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro em GET /integrations/status:', error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+
+module.exports = router;
+
+// ==================== EXEMPLO DE USO ====================
+/*
+🔥 INTEGRAÇÃO COMPLETA GOOGLE CALENDAR + API 🔥
+
+✅ AGORA quando um usuário agenda via API, o evento É CRIADO AUTOMATICAMENTE no Google Calendar!
+
+📋 COMO USAR:
+
+1. PRIMEIRO - Obter lista de agendas:
+   GET /api/calendar/integrations
+   
+   Response:
+   {
+     "success": true,
+     "data": {
+       "integrations": [
+         {
+           "id": "550e8400-e29b-41d4-a716-446655440001",
+           "calendar_name": "Agenda Principal",
+           "status": "connected",
+           "is_active": true
+         }
+       ]
+     }
+   }
+
+2. AGENDAR (cria automaticamente no Google Calendar):
+   POST /api/calendar/schedule
+   {
+     "title": "Reunião com Cliente",
+     "description": "Apresentação da proposta",
+     "start_time": "2024-01-15T10:00:00Z",
+     "end_time": "2024-01-15T11:00:00Z",
+     "calendar_id": "550e8400-e29b-41d4-a716-446655440001",
+     "create_google_meet": true,
+     "attendees": ["cliente@empresa.com"]
+   }
+   
+   Response:
+   {
+     "success": true,
+     "appointment": {
+       "id": "apt_123",
+       "google_event_id": "google_event_456",
+       "google_meet_link": "https://meet.google.com/abc-defg-hij"
+     },
+     "google_calendar": {
+       "integration_status": "success",
+       "message": "Evento criado com sucesso no Google Calendar"
+     }
+   }
+
+🔄 TOKENS REFRESH AUTOMÁTICO:
+- Se o access_token estiver vencendo, a API renova automaticamente usando refresh_token
+- Salva novos tokens no banco para próximas chamadas
+
+🎯 VALIDAÇÕES:
+- calendar_id deve pertencer à empresa
+- Integração deve estar ativa (status: connected)
+- Access token deve estar válido (ou renovável)
+- Conflitos de horário são verificados
+
+🛠️ TROUBLESHOOTING:
+- Se falhar: verifique se Google Calendar está conectado
+- Reconecte via frontend se necessário
+- Logs detalhados no console para debug
+*/ 
