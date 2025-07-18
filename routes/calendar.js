@@ -527,7 +527,8 @@ router.post('/schedule', async (req, res) => {
       lead_id,
       create_google_meet = true,
       all_day = false,
-      calendar_id
+      calendar_id,
+      created_by_agent = false // ✅ NOVO: Campo para identificar agendamentos criados por agentes IA
     } = req.body;
 
     // ✅ NOVO: Validar calendar_id obrigatório
@@ -574,24 +575,26 @@ router.post('/schedule', async (req, res) => {
       });
     }
 
-    // ✅ NOVO: Converter horários para UTC antes de salvar no banco
+    // ✅ CORRIGIDO: Sempre interpretar horários como timezone da empresa e converter para UTC
     let startTimeUTC, endTimeUTC;
     
-    if (start_time.includes('Z') || start_time.includes('+')) {
-      // Se já tem timezone explícito, usar diretamente
-      startTimeUTC = start_time;
-      endTimeUTC = end_time;
-    } else {
-      // Se é horário local, converter para UTC
-      const [startDate, startTimeOnly] = start_time.includes('T') ? start_time.split('T') : [start_time, '00:00:00'];
-      const [endDate, endTimeOnly] = end_time.includes('T') ? end_time.split('T') : [end_time, '00:00:00'];
-      
-      startTimeUTC = formatToISO(startDate, startTimeOnly.split(':').slice(0, 2).join(':'), companyTimezone);
-      endTimeUTC = formatToISO(endDate, endTimeOnly.split(':').slice(0, 2).join(':'), companyTimezone);
-    }
+    // Remover sufixos de timezone (Z, +XX:XX) para interpretar como horário local da empresa
+    const cleanStartTime = start_time.replace(/Z$|[+-]\d{2}:\d{2}$/, '');
+    const cleanEndTime = end_time.replace(/Z$|[+-]\d{2}:\d{2}$/, '');
+    
+    // Extrair data e hora
+    const [startDate, startTimeOnly] = cleanStartTime.includes('T') ? cleanStartTime.split('T') : [cleanStartTime, '00:00:00'];
+    const [endDate, endTimeOnly] = cleanEndTime.includes('T') ? cleanEndTime.split('T') : [cleanEndTime, '00:00:00'];
+    
+    // Converter para UTC baseado no timezone da empresa
+    startTimeUTC = formatToISO(startDate, startTimeOnly.split('.')[0].split(':').slice(0, 2).join(':'), companyTimezone);
+    endTimeUTC = formatToISO(endDate, endTimeOnly.split('.')[0].split(':').slice(0, 2).join(':'), companyTimezone);
 
     console.log(`📅 Agendando: ${title} para ${start_time} - ${end_time} (${companyTimezone}) na agenda ${calendarValidation.integration.calendar_name}`);
+    console.log(`🔄 Horário original: ${start_time} - ${end_time}`);
+    console.log(`🔄 Horário limpo: ${cleanStartTime} - ${cleanEndTime}`);
     console.log(`🔄 Convertido para UTC: ${startTimeUTC} - ${endTimeUTC}`);
+    console.log(`🤖 Criado por agente: ${created_by_agent}`);
 
     // Verificar se lead_id existe (se fornecido)
     if (lead_id) {
@@ -674,7 +677,8 @@ router.post('/schedule', async (req, res) => {
         create_meet: create_google_meet,
         lead_id,
         all_day,
-        status: 'scheduled'
+        status: 'scheduled',
+        created_by_agent: created_by_agent // ✅ NOVO: Campo para identificar agendamentos criados por agentes IA
       })
       .select('*')
       .single();
@@ -808,6 +812,7 @@ router.post('/schedule', async (req, res) => {
         lead_id: appointment.lead_id,
         google_calendar_id: appointment.google_calendar_id,
         create_meet: appointment.create_meet,
+        created_by_agent: appointment.created_by_agent, // ✅ NOVO: Indicador se foi criado por agente IA
         created_at: appointment.created_at
       },
       google_calendar: googleEventInfo,
@@ -820,10 +825,16 @@ router.post('/schedule', async (req, res) => {
         timezone_conversion: {
           original_start: start_time,
           original_end: end_time,
+          cleaned_start: cleanStartTime,
+          cleaned_end: cleanEndTime,
           utc_start: startTimeUTC,
           utc_end: endTimeUTC,
           company_timezone: companyTimezone,
-          note: "Horários convertidos de timezone local para UTC antes de salvar no banco"
+          note: "Horários sempre interpretados como timezone da empresa e convertidos para UTC"
+        },
+        agent_info: {
+          created_by_agent: created_by_agent,
+          note: "Campo usado para diferenciação visual no app entre agendamentos criados por IA vs humanos"
         }
       }
     });
