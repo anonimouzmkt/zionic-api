@@ -727,6 +727,10 @@ router.get('/appointments', async (req, res) => {
           message: calendarValidation.error
         });
       }
+      
+      console.log(`🔍 Filtrando appointments por calendar_id: ${calendar_id}`);
+      console.log(`📧 Google Calendar ID correspondente: ${calendarValidation.integration.calendar_id}`);
+      
       query = query.eq('google_calendar_id', calendarValidation.integration.calendar_id);
     }
 
@@ -771,6 +775,32 @@ router.get('/appointments', async (req, res) => {
         error: 'Erro interno do servidor',
         details: error.message
       });
+    }
+
+    // 🔍 DEBUG: Verificar appointments encontrados e total da empresa
+    console.log(`📋 Appointments encontrados: ${appointments?.length || 0}`);
+    
+    // Verificar total de appointments da empresa (sem filtro)
+    const { data: allAppointments, error: allError } = await req.supabase
+      .from('appointments')
+      .select('id, title, google_calendar_id')
+      .eq('company_id', company.id);
+    
+    if (!allError) {
+      console.log(`📊 Total de appointments da empresa: ${allAppointments?.length || 0}`);
+      const uniqueCalendarIds = [...new Set(allAppointments.map(apt => apt.google_calendar_id).filter(Boolean))];
+      console.log(`📅 Google Calendar IDs únicos encontrados:`, uniqueCalendarIds);
+      
+      // Verificar integrações ativas da empresa
+      const { data: integrations, error: intError } = await req.supabase
+        .from('google_calendar_integrations')
+        .select('id, calendar_id, calendar_name, status, is_active')
+        .eq('company_id', company.id);
+      
+      if (!intError) {
+        console.log(`🔗 Integrações de calendário encontradas:`, 
+          integrations.map(i => `${i.id} -> ${i.calendar_id} (${i.calendar_name}) - ${i.status}/${i.is_active ? 'ativo' : 'inativo'}`));
+      }
     }
 
     // ✅ CORRIGIDO: Buscar informações das agendas, leads e usuários separadamente
