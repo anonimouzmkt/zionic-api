@@ -574,7 +574,24 @@ router.post('/schedule', async (req, res) => {
       });
     }
 
-    console.log(`📅 Agendando: ${title} para ${start_time} - ${end_time} na agenda ${calendarValidation.integration.calendar_name}`);
+    // ✅ NOVO: Converter horários para UTC antes de salvar no banco
+    let startTimeUTC, endTimeUTC;
+    
+    if (start_time.includes('Z') || start_time.includes('+')) {
+      // Se já tem timezone explícito, usar diretamente
+      startTimeUTC = start_time;
+      endTimeUTC = end_time;
+    } else {
+      // Se é horário local, converter para UTC
+      const [startDate, startTimeOnly] = start_time.includes('T') ? start_time.split('T') : [start_time, '00:00:00'];
+      const [endDate, endTimeOnly] = end_time.includes('T') ? end_time.split('T') : [end_time, '00:00:00'];
+      
+      startTimeUTC = formatToISO(startDate, startTimeOnly.split(':').slice(0, 2).join(':'), companyTimezone);
+      endTimeUTC = formatToISO(endDate, endTimeOnly.split(':').slice(0, 2).join(':'), companyTimezone);
+    }
+
+    console.log(`📅 Agendando: ${title} para ${start_time} - ${end_time} (${companyTimezone}) na agenda ${calendarValidation.integration.calendar_name}`);
+    console.log(`🔄 Convertido para UTC: ${startTimeUTC} - ${endTimeUTC}`);
 
     // Verificar se lead_id existe (se fornecido)
     if (lead_id) {
@@ -600,14 +617,14 @@ router.post('/schedule', async (req, res) => {
       req.supabase
     );
 
-    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica usando email real
+    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica usando horários UTC
     const { data: conflicts, error: conflictError } = await req.supabase
       .from('appointments')
       .select('id, title, start_time, end_time')
       .eq('company_id', company.id)
       .eq('google_calendar_id', googleCalendarIdForConflicts)
       .neq('status', 'cancelled')
-      .or(`and(start_time.lte.${start_time},end_time.gte.${start_time}),and(start_time.lte.${end_time},end_time.gte.${end_time}),and(start_time.gte.${start_time},end_time.lte.${end_time})`);
+      .or(`and(start_time.lte.${startTimeUTC},end_time.gte.${startTimeUTC}),and(start_time.lte.${endTimeUTC},end_time.gte.${endTimeUTC}),and(start_time.gte.${startTimeUTC},end_time.lte.${endTimeUTC})`);
 
     if (conflictError) {
       console.error('❌ Erro ao verificar conflitos:', conflictError);
@@ -641,7 +658,7 @@ router.post('/schedule', async (req, res) => {
           : email)
       : [];
 
-    // ✅ CORRIGIDO: Criar appointment no banco com estrutura correta
+    // ✅ CORRIGIDO: Criar appointment no banco com horários UTC convertidos
     const { data: appointment, error: createError } = await req.supabase
       .from('appointments')
       .insert({
@@ -649,8 +666,8 @@ router.post('/schedule', async (req, res) => {
         created_by: req.apiKey.created_by || null, // API key pode não ter usuário
         title,
         description,
-        start_time,
-        end_time,
+        start_time: startTimeUTC,  // ✅ CORRIGIDO: Usar horário UTC
+        end_time: endTimeUTC,      // ✅ CORRIGIDO: Usar horário UTC
         location,
         attendees: attendeesJson,
         google_calendar_id: googleCalendarIdForConflicts, // Email real da agenda do Google
@@ -781,8 +798,10 @@ router.post('/schedule', async (req, res) => {
         id: appointment.id,
         title: appointment.title,
         description: appointment.description,
-        start_time: appointment.start_time,
-        end_time: appointment.end_time,
+        start_time: start_time,  // ✅ Retornar horário original enviado pelo usuário
+        end_time: end_time,      // ✅ Retornar horário original enviado pelo usuário
+        start_time_utc: appointment.start_time,  // ✅ NOVO: Mostrar também o UTC salvo
+        end_time_utc: appointment.end_time,      // ✅ NOVO: Mostrar também o UTC salvo
         location: appointment.location,
         status: appointment.status,
         attendees: appointment.attendees,
@@ -796,6 +815,16 @@ router.post('/schedule', async (req, res) => {
       company: {
         id: company.id,
         name: company.name
+      },
+      debug: {
+        timezone_conversion: {
+          original_start: start_time,
+          original_end: end_time,
+          utc_start: startTimeUTC,
+          utc_end: endTimeUTC,
+          company_timezone: companyTimezone,
+          note: "Horários convertidos de timezone local para UTC antes de salvar no banco"
+        }
       }
     });
 
@@ -1134,11 +1163,32 @@ router.put('/appointments/:id', async (req, res) => {
       });
     }
 
-    // Verificar se end_time é após start_time (se ambos fornecidos)
-    const newStartTime = start_time || existingAppointment.start_time;
-    const newEndTime = end_time || existingAppointment.end_time;
+    // ✅ NOVO: Converter horários para UTC se fornecidos
+    let startTimeUTC, endTimeUTC;
     
-    if (new Date(newEndTime) <= new Date(newStartTime)) {
+    if (start_time) {
+      if (start_time.includes('Z') || start_time.includes('+')) {
+        startTimeUTC = start_time;
+      } else {
+        const [startDate, startTimeOnly] = start_time.includes('T') ? start_time.split('T') : [start_time, '00:00:00'];
+        startTimeUTC = formatToISO(startDate, startTimeOnly.split(':').slice(0, 2).join(':'), companyTimezone);
+      }
+    }
+    
+    if (end_time) {
+      if (end_time.includes('Z') || end_time.includes('+')) {
+        endTimeUTC = end_time;
+      } else {
+        const [endDate, endTimeOnly] = end_time.includes('T') ? end_time.split('T') : [end_time, '00:00:00'];
+        endTimeUTC = formatToISO(endDate, endTimeOnly.split(':').slice(0, 2).join(':'), companyTimezone);
+      }
+    }
+
+    // Verificar se end_time é após start_time (usando horários UTC para comparação)
+    const newStartTimeUTC = startTimeUTC || existingAppointment.start_time;
+    const newEndTimeUTC = endTimeUTC || existingAppointment.end_time;
+    
+    if (new Date(newEndTimeUTC) <= new Date(newStartTimeUTC)) {
       return res.status(400).json({
         error: 'Horário inválido',
         message: 'Horário de fim deve ser posterior ao de início'
@@ -1154,7 +1204,7 @@ router.put('/appointments/:id', async (req, res) => {
         .eq('google_calendar_id', targetGoogleCalendarId)
         .neq('id', id) // Excluir o próprio appointment
         .neq('status', 'cancelled')
-        .or(`and(start_time.lte.${newStartTime},end_time.gte.${newStartTime}),and(start_time.lte.${newEndTime},end_time.gte.${newEndTime}),and(start_time.gte.${newStartTime},end_time.lte.${newEndTime})`);
+        .or(`and(start_time.lte.${newStartTimeUTC},end_time.gte.${newStartTimeUTC}),and(start_time.lte.${newEndTimeUTC},end_time.gte.${newEndTimeUTC}),and(start_time.gte.${newStartTimeUTC},end_time.lte.${newEndTimeUTC})`);
 
       if (conflictError) {
         console.error('❌ Erro ao verificar conflitos:', conflictError);
@@ -1178,12 +1228,12 @@ router.put('/appointments/:id', async (req, res) => {
       }
     }
 
-    // Preparar dados para atualização
+    // ✅ CORRIGIDO: Preparar dados para atualização usando horários UTC convertidos
     const updateData = {};
     if (title !== undefined) updateData.title = title;
     if (description !== undefined) updateData.description = description;
-    if (start_time !== undefined) updateData.start_time = start_time;
-    if (end_time !== undefined) updateData.end_time = end_time;
+    if (start_time !== undefined) updateData.start_time = startTimeUTC;  // ✅ Usar horário UTC
+    if (end_time !== undefined) updateData.end_time = endTimeUTC;        // ✅ Usar horário UTC
     if (location !== undefined) updateData.location = location;
     if (status !== undefined) updateData.status = status;
     if (create_google_meet !== undefined) updateData.create_meet = create_google_meet;
