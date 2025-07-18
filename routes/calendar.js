@@ -663,7 +663,7 @@ router.post('/schedule', async (req, res) => {
       .from('appointments')
       .insert({
         company_id: company.id,
-        created_by: req.apiKey.created_by || null, // API key pode não ter usuário
+        created_by: null, // ✅ SIMPLIFICADO: NULL para criação via API
         title,
         description,
         start_time: startTimeUTC,  // ✅ CORRIGIDO: Usar horário UTC
