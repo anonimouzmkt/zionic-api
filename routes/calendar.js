@@ -728,10 +728,25 @@ router.get('/appointments', async (req, res) => {
         });
       }
       
-      console.log(`🔍 Filtrando appointments por calendar_id: ${calendar_id}`);
-      console.log(`📧 Google Calendar ID correspondente: ${calendarValidation.integration.calendar_id}`);
+      // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real dos appointments
+      let googleCalendarIdToSearch = calendarValidation.integration.calendar_id;
       
-      query = query.eq('google_calendar_id', calendarValidation.integration.calendar_id);
+      if (googleCalendarIdToSearch === 'primary') {
+        // Para "primary", buscar qual email real está sendo usado nos appointments desta empresa
+        const { data: sampleAppointment } = await req.supabase
+          .from('appointments')
+          .select('google_calendar_id')
+          .eq('company_id', company.id)
+          .not('google_calendar_id', 'is', null)
+          .not('google_calendar_id', 'eq', 'primary')
+          .limit(1)
+          .single();
+        
+        if (sampleAppointment?.google_calendar_id) {
+          googleCalendarIdToSearch = sampleAppointment.google_calendar_id;
+        }
+      }
+      query = query.eq('google_calendar_id', googleCalendarIdToSearch);
     }
 
     // Filtros de data
