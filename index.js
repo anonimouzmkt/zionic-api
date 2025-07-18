@@ -177,6 +177,7 @@ app.get('/', (req, res) => {
         send_image: 'POST /api/conversation/send-image - Enviar imagem via URL',
         send_image_base64: 'POST /api/conversation/send-image-base64 - Enviar imagem via base64',
         send_audio: 'POST /api/conversation/send-audio - Enviar áudio via URL',
+        send_audio_base64: 'POST /api/conversation/send-audio-base64 - Enviar áudio via base64',
         send_video: 'POST /api/conversation/send-video - Enviar vídeo via URL',
         send_document: 'POST /api/conversation/send-document - Enviar documento via URL',
         upload_image: 'POST /api/conversation/upload-image - Upload e envio de imagem',
@@ -459,6 +460,25 @@ app.get('/', (req, res) => {
             image_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
             caption: 'Imagem enviada via base64',
             filename: 'minha-imagem.jpg'
+          }
+        },
+        send_audio_url: {
+          url: 'POST /api/conversation/send-audio',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            conversation_id: 'uuid-da-conversa',
+            audio_url: 'https://exemplo.com/audio.mp3',
+            delay: 1500
+          }
+        },
+        send_audio_base64: {
+          url: 'POST /api/conversation/send-audio-base64',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            conversation_id: 'uuid-da-conversa',
+            audio_base64: 'UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=',
+            delay: 1500,
+            sent_via_agent: false
           }
         },
         upload_image: {
