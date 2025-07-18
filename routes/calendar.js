@@ -86,6 +86,54 @@ async function getCompanyTimezone(companyId, supabase) {
   }
 }
 
+// ✅ HELPER NOVO: Validar se calendar_id pertence à empresa e está ativo
+async function validateCalendarId(calendarId, companyId, supabase) {
+  try {
+    const { data: integration, error } = await supabase
+      .from('google_calendar_integrations')
+      .select('id, calendar_id, calendar_name, status, is_active, access_token, user_id')
+      .eq('id', calendarId)
+      .eq('company_id', companyId)
+      .eq('is_active', true)
+      .eq('status', 'connected')
+      .single();
+
+    if (error || !integration) {
+      return {
+        valid: false,
+        error: 'Integração de calendário não encontrada ou inativa',
+        integration: null
+      };
+    }
+
+    if (!integration.access_token) {
+      return {
+        valid: false,
+        error: 'Integração de calendário sem token de acesso válido',
+        integration: null
+      };
+    }
+
+    return {
+      valid: true,
+      integration: {
+        id: integration.id,
+        calendar_id: integration.calendar_id,
+        calendar_name: integration.calendar_name,
+        user_id: integration.user_id,
+        access_token: integration.access_token
+      }
+    };
+  } catch (error) {
+    console.error('❌ Erro ao validar calendar_id:', error);
+    return {
+      valid: false,
+      error: 'Erro interno ao validar integração de calendário',
+      integration: null
+    };
+  }
+}
+
 // ✅ HELPER: Verificar se empresa tem integração ativa do Google Calendar
 async function checkGoogleCalendarIntegration(companyId, supabase) {
   // ✅ NOVO: Buscar todas as integrações ativas (múltiplas agendas)
@@ -122,12 +170,29 @@ async function checkGoogleCalendarIntegration(companyId, supabase) {
   };
 }
 
-// ✅ 1. ENDPOINT: Verificar disponibilidade de horário
+// ✅ 1. ENDPOINT: Verificar disponibilidade de horário (MODIFICADO - requer calendar_id)
 router.get('/availability/:date', async (req, res) => {
   try {
     const { company } = req;
     const { date } = req.params;
-    const { start_hour = '08:00', end_hour = '18:00' } = req.query;
+    const { start_hour = '08:00', end_hour = '18:00', calendar_id } = req.query;
+
+    // ✅ NOVO: Validar calendar_id obrigatório
+    if (!calendar_id) {
+      return res.status(400).json({
+        error: 'Parâmetro obrigatório faltando',
+        message: 'calendar_id é obrigatório. Use GET /api/calendar/integrations para listar as agendas disponíveis'
+      });
+    }
+
+    // ✅ NOVO: Validar se calendar_id é válido para a empresa
+    const calendarValidation = await validateCalendarId(calendar_id, company.id, req.supabase);
+    if (!calendarValidation.valid) {
+      return res.status(400).json({
+        error: 'Agenda inválida',
+        message: calendarValidation.error
+      });
+    }
 
     // Validar data
     if (!isValidDate(date)) {
@@ -144,13 +209,14 @@ router.get('/availability/:date', async (req, res) => {
     const startDateTime = formatToISO(date, start_hour, companyTimezone);
     const endDateTime = formatToISO(date, end_hour, companyTimezone);
 
-    console.log(`🔍 Verificando disponibilidade para ${date} entre ${start_hour} e ${end_hour}`);
+    console.log(`🔍 Verificando disponibilidade para ${date} entre ${start_hour} e ${end_hour} na agenda ${calendarValidation.integration.calendar_name}`);
 
-    // Buscar appointments do dia
+    // ✅ MODIFICADO: Buscar appointments do dia para a agenda específica
     const { data: appointments, error } = await req.supabase
       .from('appointments')
-      .select('id, title, start_time, end_time, status')
+      .select('id, title, start_time, end_time, status, calendar_integration_id')
       .eq('company_id', company.id)
+      .eq('calendar_integration_id', calendar_id)
       .gte('start_time', startDateTime)
       .lte('end_time', endDateTime)
       .neq('status', 'cancelled')
@@ -186,6 +252,11 @@ router.get('/availability/:date', async (req, res) => {
         start: startDateTime,
         end: endDateTime
       },
+      calendar_info: {
+        id: calendarValidation.integration.id,
+        name: calendarValidation.integration.calendar_name,
+        calendar_id: calendarValidation.integration.calendar_id
+      },
       timezone: companyTimezone,
       company: {
         id: company.id,
@@ -202,7 +273,7 @@ router.get('/availability/:date', async (req, res) => {
   }
 });
 
-// ✅ 2. ENDPOINT: Agendar horário
+// ✅ 2. ENDPOINT: Agendar horário (MODIFICADO - requer calendar_id)
 router.post('/schedule', async (req, res) => {
   try {
     const { company } = req;
@@ -215,8 +286,26 @@ router.post('/schedule', async (req, res) => {
       attendees = [],
       lead_id,
       create_meet = true,
-      all_day = false
+      all_day = false,
+      calendar_id
     } = req.body;
+
+    // ✅ NOVO: Validar calendar_id obrigatório
+    if (!calendar_id) {
+      return res.status(400).json({
+        error: 'Parâmetro obrigatório faltando',
+        message: 'calendar_id é obrigatório no body da requisição. Use GET /api/calendar/integrations para listar as agendas disponíveis'
+      });
+    }
+
+    // ✅ NOVO: Validar se calendar_id é válido para a empresa
+    const calendarValidation = await validateCalendarId(calendar_id, company.id, req.supabase);
+    if (!calendarValidation.valid) {
+      return res.status(400).json({
+        error: 'Agenda inválida',
+        message: calendarValidation.error
+      });
+    }
 
     // Obter timezone da empresa
     const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
@@ -225,7 +314,7 @@ router.post('/schedule', async (req, res) => {
     if (!title || !start_time || !end_time) {
       return res.status(400).json({
         error: 'Dados obrigatórios faltando',
-        message: 'title, start_time e end_time são obrigatórios'
+        message: 'title, start_time, end_time e calendar_id são obrigatórios'
       });
     }
 
@@ -245,7 +334,7 @@ router.post('/schedule', async (req, res) => {
       });
     }
 
-    console.log(`📅 Agendando: ${title} para ${start_time} - ${end_time}`);
+    console.log(`📅 Agendando: ${title} para ${start_time} - ${end_time} na agenda ${calendarValidation.integration.calendar_name}`);
 
     // Verificar se lead_id existe (se fornecido)
     if (lead_id) {
@@ -264,11 +353,12 @@ router.post('/schedule', async (req, res) => {
       }
     }
 
-    // Verificar conflitos de horário
+    // ✅ MODIFICADO: Verificar conflitos de horário na agenda específica
     const { data: conflicts, error: conflictError } = await req.supabase
       .from('appointments')
       .select('id, title, start_time, end_time')
       .eq('company_id', company.id)
+      .eq('calendar_integration_id', calendar_id)
       .neq('status', 'cancelled')
       .or(`and(start_time.lte.${start_time},end_time.gte.${start_time}),and(start_time.lte.${end_time},end_time.gte.${end_time}),and(start_time.gte.${start_time},end_time.lte.${end_time})`);
 
@@ -283,8 +373,12 @@ router.post('/schedule', async (req, res) => {
     if (conflicts && conflicts.length > 0) {
       return res.status(409).json({
         error: 'Conflito de horário',
-        message: 'Já existe um agendamento neste horário',
-        conflicts: conflicts
+        message: 'Já existe um agendamento neste horário nesta agenda',
+        conflicts: conflicts,
+        calendar_info: {
+          id: calendarValidation.integration.id,
+          name: calendarValidation.integration.calendar_name
+        }
       });
     }
 
@@ -295,11 +389,12 @@ router.post('/schedule', async (req, res) => {
           : email)
       : [];
 
-    // Criar appointment no banco
+    // ✅ MODIFICADO: Criar appointment no banco com calendar_integration_id
     const { data: appointment, error: createError } = await req.supabase
       .from('appointments')
       .insert({
         company_id: company.id,
+        calendar_integration_id: calendar_id,
         created_by: req.apiKey.created_by || null, // API key pode não ter usuário
         title,
         description,
@@ -325,24 +420,16 @@ router.post('/schedule', async (req, res) => {
 
     console.log(`✅ Appointment criado: ${appointment.id}`);
 
-    // ✅ NOVO: Verificar múltiplas integrações com Google Calendar
-    const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
-
-    let googleEventInfo = null;
-    if (googleIntegration.hasIntegration) {
-      console.log(`🔄 Tentando sincronizar com ${googleIntegration.integrations.length} agenda(s) do Google Calendar...`);
-      
-      // Para agendamentos via API, usar a primeira integração (primária)
-      // Em versões futuras, permitir especificar qual integração usar
-      const primaryIntegration = googleIntegration.primary;
-      
-      googleEventInfo = {
-        integration_status: 'attempted',
-        message: `Sincronização com ${googleIntegration.integrations.length} agenda(s) do Google Calendar será processada`,
-        primary_calendar: primaryIntegration.calendar_name || primaryIntegration.calendar_id,
-        total_integrations: googleIntegration.integrations.length
-      };
-    }
+    // ✅ MODIFICADO: Usar a integração específica para sincronização
+    let googleEventInfo = {
+      integration_status: 'sync_attempted',
+      message: `Sincronização com agenda ${calendarValidation.integration.calendar_name} será processada`,
+      calendar_info: {
+        id: calendarValidation.integration.id,
+        name: calendarValidation.integration.calendar_name,
+        calendar_id: calendarValidation.integration.calendar_id
+      }
+    };
 
     return res.status(201).json({
       success: true,
@@ -357,6 +444,7 @@ router.post('/schedule', async (req, res) => {
         status: appointment.status,
         attendees: appointment.attendees,
         lead_id: appointment.lead_id,
+        calendar_integration_id: appointment.calendar_integration_id,
         created_at: appointment.created_at
       },
       google_calendar: googleEventInfo,
@@ -376,7 +464,7 @@ router.post('/schedule', async (req, res) => {
   }
 });
 
-// ✅ 3. ENDPOINT: Listar agendamentos
+// ✅ 3. ENDPOINT: Listar agendamentos (MODIFICADO - aceita calendar_id como filtro)
 router.get('/appointments', async (req, res) => {
   try {
     const { company } = req;
@@ -386,6 +474,7 @@ router.get('/appointments', async (req, res) => {
       end_date,
       status,
       lead_id,
+      calendar_id,
       limit = 50,
       page = 1
     } = req.query;
@@ -398,12 +487,26 @@ router.get('/appointments', async (req, res) => {
       .select(`
         id, title, description, start_time, end_time, location,
         status, attendees, all_day, google_event_id, google_meet_link,
-        lead_id, created_at, updated_at,
+        lead_id, calendar_integration_id, created_at, updated_at,
         leads(id, title, status),
-        users!appointments_created_by_fkey(id, first_name, last_name, full_name)
+        users!appointments_created_by_fkey(id, first_name, last_name, full_name),
+        google_calendar_integrations!appointments_calendar_integration_id_fkey(id, calendar_name, calendar_id)
       `)
       .eq('company_id', company.id)
       .order('start_time', { ascending: true });
+
+    // ✅ NOVO: Filtro por calendar_id específico
+    if (calendar_id) {
+      // Validar se calendar_id é válido para a empresa
+      const calendarValidation = await validateCalendarId(calendar_id, company.id, req.supabase);
+      if (!calendarValidation.valid) {
+        return res.status(400).json({
+          error: 'Agenda inválida',
+          message: calendarValidation.error
+        });
+      }
+      query = query.eq('calendar_integration_id', calendar_id);
+    }
 
     // Filtros de data
     if (date) {
@@ -461,6 +564,11 @@ router.get('/appointments', async (req, res) => {
       all_day: apt.all_day,
       google_event_id: apt.google_event_id,
       google_meet_link: apt.google_meet_link,
+      calendar_info: apt.google_calendar_integrations ? {
+        id: apt.calendar_integration_id,
+        name: apt.google_calendar_integrations.calendar_name,
+        calendar_id: apt.google_calendar_integrations.calendar_id
+      } : null,
       lead: apt.leads ? {
         id: apt.leads.id,
         title: apt.leads.title,
@@ -488,7 +596,8 @@ router.get('/appointments', async (req, res) => {
         start_date,
         end_date,
         status,
-        lead_id
+        lead_id,
+        calendar_id
       },
       timezone: companyTimezone,
       company: {
@@ -506,7 +615,7 @@ router.get('/appointments', async (req, res) => {
   }
 });
 
-// ✅ 4. ENDPOINT: Cancelar/Editar agendamento
+// ✅ 4. ENDPOINT: Cancelar/Editar agendamento (MODIFICADO - mantém calendar_id)
 router.put('/appointments/:id', async (req, res) => {
   try {
     const { company } = req;
@@ -520,7 +629,8 @@ router.put('/appointments/:id', async (req, res) => {
       attendees,
       status,
       create_meet,
-      all_day
+      all_day,
+      calendar_id // ✅ NOVO: Permitir trocar de agenda
     } = req.body;
 
     // Obter timezone da empresa
@@ -539,6 +649,21 @@ router.put('/appointments/:id', async (req, res) => {
         error: 'Agendamento não encontrado',
         message: 'O agendamento não existe ou não pertence à empresa'
       });
+    }
+
+    // ✅ NOVO: Se calendar_id foi fornecido, validar se é válido
+    let targetCalendarId = existingAppointment.calendar_integration_id;
+    let calendarValidation = null;
+    
+    if (calendar_id && calendar_id !== existingAppointment.calendar_integration_id) {
+      calendarValidation = await validateCalendarId(calendar_id, company.id, req.supabase);
+      if (!calendarValidation.valid) {
+        return res.status(400).json({
+          error: 'Agenda inválida',
+          message: calendarValidation.error
+        });
+      }
+      targetCalendarId = calendar_id;
     }
 
     // Validar datas se fornecidas
@@ -567,12 +692,13 @@ router.put('/appointments/:id', async (req, res) => {
       });
     }
 
-    // Verificar conflitos (se mudando horário)
-    if (start_time || end_time) {
+    // ✅ MODIFICADO: Verificar conflitos na agenda específica (se mudando horário ou agenda)
+    if (start_time || end_time || calendar_id) {
       const { data: conflicts, error: conflictError } = await req.supabase
         .from('appointments')
         .select('id, title, start_time, end_time')
         .eq('company_id', company.id)
+        .eq('calendar_integration_id', targetCalendarId)
         .neq('id', id) // Excluir o próprio appointment
         .neq('status', 'cancelled')
         .or(`and(start_time.lte.${newStartTime},end_time.gte.${newStartTime}),and(start_time.lte.${newEndTime},end_time.gte.${newEndTime}),and(start_time.gte.${newStartTime},end_time.lte.${newEndTime})`);
@@ -588,7 +714,7 @@ router.put('/appointments/:id', async (req, res) => {
       if (conflicts && conflicts.length > 0) {
         return res.status(409).json({
           error: 'Conflito de horário',
-          message: 'Já existe um agendamento neste horário',
+          message: 'Já existe um agendamento neste horário na agenda especificada',
           conflicts: conflicts
         });
       }
@@ -604,6 +730,7 @@ router.put('/appointments/:id', async (req, res) => {
     if (status !== undefined) updateData.status = status;
     if (create_meet !== undefined) updateData.create_meet = create_meet;
     if (all_day !== undefined) updateData.all_day = all_day;
+    if (calendar_id !== undefined) updateData.calendar_integration_id = calendar_id;
     
     if (attendees !== undefined) {
       updateData.attendees = Array.isArray(attendees) 
@@ -632,20 +759,15 @@ router.put('/appointments/:id', async (req, res) => {
 
     console.log(`✅ Appointment ${id} atualizado`);
 
-    // ✅ NOVO: Verificar múltiplas integrações com Google Calendar
-    const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
-
-    let googleEventInfo = null;
-    if (googleIntegration.hasIntegration && existingAppointment.google_event_id) {
-      console.log(`🔄 Tentando sincronizar mudanças com ${googleIntegration.integrations.length} agenda(s) do Google Calendar...`);
-      
-      googleEventInfo = {
-        integration_status: 'sync_attempted',
-        google_event_id: existingAppointment.google_event_id,
-        message: `Sincronização de mudanças com ${googleIntegration.integrations.length} agenda(s) do Google Calendar será processada`,
-        total_integrations: googleIntegration.integrations.length
-      };
-    }
+    // ✅ MODIFICADO: Informações sobre sincronização (considerando possível mudança de agenda)
+    let googleEventInfo = {
+      integration_status: 'sync_attempted',
+      google_event_id: existingAppointment.google_event_id,
+      message: calendar_id ? 
+        `Agendamento movido para nova agenda. Sincronização será processada` :
+        `Sincronização de mudanças será processada`,
+      calendar_changed: !!calendar_id
+    };
 
     return res.json({
       success: true,
@@ -660,6 +782,7 @@ router.put('/appointments/:id', async (req, res) => {
         status: updatedAppointment.status,
         attendees: updatedAppointment.attendees,
         lead_id: updatedAppointment.lead_id,
+        calendar_integration_id: updatedAppointment.calendar_integration_id,
         google_event_id: updatedAppointment.google_event_id,
         google_meet_link: updatedAppointment.google_meet_link,
         updated_at: updatedAppointment.updated_at
@@ -681,7 +804,7 @@ router.put('/appointments/:id', async (req, res) => {
   }
 });
 
-// ✅ 5. ENDPOINT ADICIONAL: Deletar agendamento
+// ✅ 5. ENDPOINT ADICIONAL: Deletar agendamento (sem modificação necessária)
 router.delete('/appointments/:id', async (req, res) => {
   try {
     const { company } = req;
@@ -719,21 +842,16 @@ router.delete('/appointments/:id', async (req, res) => {
 
     console.log(`✅ Appointment ${id} deletado`);
 
-    // ✅ NOVO: Verificar múltiplas integrações para deleção
+    // ✅ MODIFICADO: Informações sobre deleção
     let googleEventInfo = null;
     if (existingAppointment.google_event_id) {
       console.log('🔄 Tentando deletar evento do Google Calendar...');
       
-      // Verificar se ainda há integrações ativas
-      const googleIntegration = await checkGoogleCalendarIntegration(company.id, req.supabase);
-      
       googleEventInfo = {
         integration_status: 'deletion_attempted',
         google_event_id: existingAppointment.google_event_id,
-        message: googleIntegration.hasIntegration 
-          ? `Deleção do evento em ${googleIntegration.integrations.length} agenda(s) do Google Calendar será processada`
-          : 'Deleção no Google Calendar não será processada (nenhuma integração ativa)',
-        total_integrations: googleIntegration.hasIntegration ? googleIntegration.integrations.length : 0
+        message: 'Deleção do evento no Google Calendar será processada',
+        calendar_integration_id: existingAppointment.calendar_integration_id
       };
     }
 
@@ -744,7 +862,8 @@ router.delete('/appointments/:id', async (req, res) => {
         id: existingAppointment.id,
         title: existingAppointment.title,
         start_time: existingAppointment.start_time,
-        end_time: existingAppointment.end_time
+        end_time: existingAppointment.end_time,
+        calendar_integration_id: existingAppointment.calendar_integration_id
       },
       google_calendar: googleEventInfo,
       timezone: await getCompanyTimezone(company.id, req.supabase),
@@ -763,7 +882,7 @@ router.delete('/appointments/:id', async (req, res) => {
   }
 });
 
-// ✅ 6. ENDPOINT NOVO: Listar Integrações do Google Calendar
+// ✅ 6. ENDPOINT: Listar Integrações do Google Calendar (sem modificação necessária)
 router.get('/integrations', async (req, res) => {
   try {
     const { company } = req;
@@ -849,7 +968,7 @@ router.get('/integrations', async (req, res) => {
   }
 });
 
-// ✅ 7. ENDPOINT NOVO: Verificar Status de Múltiplas Integrações
+// ✅ 7. ENDPOINT: Verificar Status de Múltiplas Integrações (sem modificação necessária)
 router.get('/integrations/status', async (req, res) => {
   try {
     const { company } = req;
