@@ -192,6 +192,33 @@ async function getCompanyTimezone(companyId, supabase) {
   }
 }
 
+// ✅ HELPER NOVO: Converter horário local para UTC para consultas no banco
+function convertLocalToUTC(localDateTime, timezone = 'America/Sao_Paulo') {
+  try {
+    // Se já tem timezone explícito (+00:00, -03:00, etc), retornar como está
+    if (localDateTime.includes('+') || localDateTime.endsWith('Z')) {
+      return localDateTime;
+    }
+    
+    // Criar data assumindo que está no timezone local especificado
+    const date = new Date(localDateTime);
+    
+    // Obter offset do timezone (em minutos)
+    const tempDate = new Date();
+    const utcTime = tempDate.toLocaleString('en-US', { timeZone: 'UTC' });
+    const localTime = tempDate.toLocaleString('en-US', { timeZone: timezone });
+    const offsetMs = new Date(utcTime).getTime() - new Date(localTime).getTime();
+    
+    // Aplicar offset para converter para UTC
+    const utcDate = new Date(date.getTime() + offsetMs);
+    
+    return utcDate.toISOString();
+  } catch (error) {
+    console.warn('⚠️ Erro ao converter timezone, usando horário original:', error);
+    return localDateTime;
+  }
+}
+
 // ✅ HELPER NOVO: Converter "primary" para email real se necessário
 async function resolveGoogleCalendarId(calendarId, companyId, supabase) {
   if (calendarId !== 'primary') {
@@ -371,11 +398,12 @@ router.get('/availability', async (req, res) => {
     // Obter timezone da empresa (busca em users.timezone)
     const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
 
-    // Usar datas ISO diretamente (não precisa converter)
-    const startDateTime = start_time;
-    const endDateTime = end_time;
+    // ✅ CORRIGIDO: Converter horários do timezone local para UTC para consulta no banco
+    const startDateTime = convertLocalToUTC(start_time, companyTimezone);
+    const endDateTime = convertLocalToUTC(end_time, companyTimezone);
 
-    console.log(`🔍 Verificando disponibilidade de ${startDateTime} até ${endDateTime} na agenda ${calendarValidation.integration.calendar_name}`);
+    console.log(`🔍 Verificando disponibilidade de ${start_time} até ${end_time} (timezone: ${companyTimezone})`);
+    console.log(`🔄 Convertido para UTC: ${startDateTime} até ${endDateTime}`);
 
     // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real dos appointments
     const googleCalendarIdToSearch = await resolveGoogleCalendarId(
@@ -383,32 +411,6 @@ router.get('/availability', async (req, res) => {
       company.id, 
       req.supabase
     );
-
-    // ✅ DEBUG NOVO: Mostrar exatamente o que está sendo buscado vs o que existe
-    console.log('🔍 [DEBUG] Valores de busca:');
-    console.log('- calendar_id recebido:', calendar_id);
-    console.log('- calendarValidation.integration.calendar_id:', calendarValidation.integration.calendar_id);
-    console.log('- googleCalendarIdToSearch (resolvido):', googleCalendarIdToSearch);
-    console.log('- company.id:', company.id);
-    console.log('- startDateTime:', startDateTime);
-    console.log('- endDateTime:', endDateTime);
-
-    // ✅ DEBUG NOVO: Primeiro, vamos ver TODOS os appointments desta empresa para comparar
-    const { data: allAppointments, error: debugError } = await req.supabase
-      .from('appointments')
-      .select('id, title, start_time, end_time, status, google_calendar_id')
-      .eq('company_id', company.id)
-      .neq('status', 'cancelled')
-      .gte('start_time', startDateTime)
-      .lte('end_time', endDateTime)
-      .order('start_time', { ascending: true });
-
-    if (!debugError && allAppointments) {
-      console.log('🔍 [DEBUG] TODOS os appointments da empresa neste período:');
-      allAppointments.forEach(apt => {
-        console.log(`  - ${apt.title} (${apt.start_time} - ${apt.end_time}) | google_calendar_id: "${apt.google_calendar_id}"`);
-      });
-    }
 
     // ✅ CORRIGIDO: Buscar appointments da agenda específica usando google_calendar_id real
     const { data: appointments, error } = await req.supabase
@@ -420,14 +422,6 @@ router.get('/availability', async (req, res) => {
       .lte('end_time', endDateTime)
       .neq('status', 'cancelled')
       .order('start_time', { ascending: true });
-
-    // ✅ DEBUG NOVO: Mostrar resultado da busca filtrada
-    console.log('🔍 [DEBUG] Appointments encontrados com filtro google_calendar_id:', appointments?.length || 0);
-    if (appointments) {
-      appointments.forEach(apt => {
-        console.log(`  - MATCH: ${apt.title} (${apt.start_time} - ${apt.end_time}) | google_calendar_id: "${apt.google_calendar_id}"`);
-      });
-    }
 
     if (error) {
       console.error('❌ Erro ao buscar appointments:', error);
@@ -449,20 +443,14 @@ router.get('/availability', async (req, res) => {
     // Determinar se o dia está livre
     const isFree = busySlots.length === 0;
 
-    // ✅ DEBUG NOVO: Log final do resultado
-    console.log('🎯 [DEBUG] Resultado final:');
-    console.log('- isFree:', isFree);
-    console.log('- busySlots.length:', busySlots.length);
-    console.log('- googleCalendarIdToSearch usado:', googleCalendarIdToSearch);
-
     return res.json({
       success: true,
       is_free: isFree,
       total_appointments: busySlots.length,
       busy_slots: busySlots,
       availability_window: {
-        start_time: startDateTime,
-        end_time: endDateTime
+        start_time: start_time,  // ✅ Retornar horário original do request
+        end_time: end_time       // ✅ Retornar horário original do request
       },
       calendar_info: {
         id: calendarValidation.integration.id,
@@ -474,11 +462,11 @@ router.get('/availability', async (req, res) => {
         id: company.id,
         name: company.name
       },
-      // ✅ DEBUG NOVO: Adicionar informações de debug na resposta
       debug: {
+        original_times: { start_time, end_time },
+        converted_utc_times: { startDateTime, endDateTime },
         googleCalendarIdToSearch,
-        totalAppointmentsInPeriod: allAppointments?.length || 0,
-        filteredAppointments: appointments?.length || 0
+        totalAppointmentsInPeriod: busySlots.length
       }
     });
 
@@ -578,14 +566,21 @@ router.post('/schedule', async (req, res) => {
       req.supabase
     );
 
-    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica usando email real
+    // ✅ CORRIGIDO: Converter horários para UTC antes de verificar conflitos
+    const startTimeUTC = convertLocalToUTC(start_time, companyTimezone);
+    const endTimeUTC = convertLocalToUTC(end_time, companyTimezone);
+    
+    console.log(`🔍 Verificando conflitos: ${start_time} - ${end_time} (${companyTimezone})`);
+    console.log(`🔄 Convertido para UTC: ${startTimeUTC} - ${endTimeUTC}`);
+    
+    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica usando horários UTC
     const { data: conflicts, error: conflictError } = await req.supabase
       .from('appointments')
       .select('id, title, start_time, end_time')
       .eq('company_id', company.id)
       .eq('google_calendar_id', googleCalendarIdForConflicts)
       .neq('status', 'cancelled')
-      .or(`and(start_time.lte.${start_time},end_time.gte.${start_time}),and(start_time.lte.${end_time},end_time.gte.${end_time}),and(start_time.gte.${start_time},end_time.lte.${end_time})`);
+      .or(`and(start_time.lte.${startTimeUTC},end_time.gte.${startTimeUTC}),and(start_time.lte.${endTimeUTC},end_time.gte.${endTimeUTC}),and(start_time.gte.${startTimeUTC},end_time.lte.${endTimeUTC})`);
 
     if (conflictError) {
       console.error('❌ Erro ao verificar conflitos:', conflictError);
@@ -1125,6 +1120,13 @@ router.put('/appointments/:id', async (req, res) => {
 
     // ✅ CORRIGIDO: Verificar conflitos na agenda específica (se mudando horário ou agenda)
     if (start_time || end_time || calendar_id) {
+      // ✅ CONVERTER: Horários para UTC antes de verificar conflitos
+      const newStartTimeUTC = convertLocalToUTC(newStartTime, companyTimezone);
+      const newEndTimeUTC = convertLocalToUTC(newEndTime, companyTimezone);
+      
+      console.log(`🔍 Verificando conflitos para edição: ${newStartTime} - ${newEndTime} (${companyTimezone})`);
+      console.log(`🔄 Convertido para UTC: ${newStartTimeUTC} - ${newEndTimeUTC}`);
+      
       const { data: conflicts, error: conflictError } = await req.supabase
         .from('appointments')
         .select('id, title, start_time, end_time')
@@ -1132,7 +1134,7 @@ router.put('/appointments/:id', async (req, res) => {
         .eq('google_calendar_id', targetGoogleCalendarId)
         .neq('id', id) // Excluir o próprio appointment
         .neq('status', 'cancelled')
-        .or(`and(start_time.lte.${newStartTime},end_time.gte.${newStartTime}),and(start_time.lte.${newEndTime},end_time.gte.${newEndTime}),and(start_time.gte.${newStartTime},end_time.lte.${newEndTime})`);
+        .or(`and(start_time.lte.${newStartTimeUTC},end_time.gte.${newStartTimeUTC}),and(start_time.lte.${newEndTimeUTC},end_time.gte.${newEndTimeUTC}),and(start_time.gte.${newStartTimeUTC},end_time.lte.${newEndTimeUTC})`);
 
       if (conflictError) {
         console.error('❌ Erro ao verificar conflitos:', conflictError);
