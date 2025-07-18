@@ -384,6 +384,32 @@ router.get('/availability', async (req, res) => {
       req.supabase
     );
 
+    // ✅ DEBUG NOVO: Mostrar exatamente o que está sendo buscado vs o que existe
+    console.log('🔍 [DEBUG] Valores de busca:');
+    console.log('- calendar_id recebido:', calendar_id);
+    console.log('- calendarValidation.integration.calendar_id:', calendarValidation.integration.calendar_id);
+    console.log('- googleCalendarIdToSearch (resolvido):', googleCalendarIdToSearch);
+    console.log('- company.id:', company.id);
+    console.log('- startDateTime:', startDateTime);
+    console.log('- endDateTime:', endDateTime);
+
+    // ✅ DEBUG NOVO: Primeiro, vamos ver TODOS os appointments desta empresa para comparar
+    const { data: allAppointments, error: debugError } = await req.supabase
+      .from('appointments')
+      .select('id, title, start_time, end_time, status, google_calendar_id')
+      .eq('company_id', company.id)
+      .neq('status', 'cancelled')
+      .gte('start_time', startDateTime)
+      .lte('end_time', endDateTime)
+      .order('start_time', { ascending: true });
+
+    if (!debugError && allAppointments) {
+      console.log('🔍 [DEBUG] TODOS os appointments da empresa neste período:');
+      allAppointments.forEach(apt => {
+        console.log(`  - ${apt.title} (${apt.start_time} - ${apt.end_time}) | google_calendar_id: "${apt.google_calendar_id}"`);
+      });
+    }
+
     // ✅ CORRIGIDO: Buscar appointments da agenda específica usando google_calendar_id real
     const { data: appointments, error } = await req.supabase
       .from('appointments')
@@ -394,6 +420,14 @@ router.get('/availability', async (req, res) => {
       .lte('end_time', endDateTime)
       .neq('status', 'cancelled')
       .order('start_time', { ascending: true });
+
+    // ✅ DEBUG NOVO: Mostrar resultado da busca filtrada
+    console.log('🔍 [DEBUG] Appointments encontrados com filtro google_calendar_id:', appointments?.length || 0);
+    if (appointments) {
+      appointments.forEach(apt => {
+        console.log(`  - MATCH: ${apt.title} (${apt.start_time} - ${apt.end_time}) | google_calendar_id: "${apt.google_calendar_id}"`);
+      });
+    }
 
     if (error) {
       console.error('❌ Erro ao buscar appointments:', error);
@@ -415,6 +449,12 @@ router.get('/availability', async (req, res) => {
     // Determinar se o dia está livre
     const isFree = busySlots.length === 0;
 
+    // ✅ DEBUG NOVO: Log final do resultado
+    console.log('🎯 [DEBUG] Resultado final:');
+    console.log('- isFree:', isFree);
+    console.log('- busySlots.length:', busySlots.length);
+    console.log('- googleCalendarIdToSearch usado:', googleCalendarIdToSearch);
+
     return res.json({
       success: true,
       is_free: isFree,
@@ -433,6 +473,12 @@ router.get('/availability', async (req, res) => {
       company: {
         id: company.id,
         name: company.name
+      },
+      // ✅ DEBUG NOVO: Adicionar informações de debug na resposta
+      debug: {
+        googleCalendarIdToSearch,
+        totalAppointmentsInPeriod: allAppointments?.length || 0,
+        filteredAppointments: appointments?.length || 0
       }
     });
 
