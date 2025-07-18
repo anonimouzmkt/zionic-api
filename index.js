@@ -144,17 +144,19 @@ const leadsRoutes = require('./routes/leads');
 const pipelinesRoutes = require('./routes/pipelines');
 const columnsRoutes = require('./routes/columns');
 const creditsRoutes = require('./routes/credits');
+const attachmentRoutes = require('./routes/attachments');
 
 // Rota de teste
 app.get('/', (req, res) => {
   res.json({ 
     message: 'API Zionic funcionando!',
-    version: '3.1',
+    version: '3.2',
     endpoints: {
       messages: '/api/messages',
       conversation: '/api/conversation',
       calendar: '/api/calendar',
       leads: '/api/leads',
+      attachments: '/api/leads/attachments',
       pipelines: '/api/pipelines',
       columns: '/api/columns',
       credits: '/api/credits',
@@ -198,7 +200,10 @@ app.get('/', (req, res) => {
         update: 'PUT /api/leads/:id - Atualizar lead',
         delete: 'DELETE /api/leads/:id - Deletar lead',
         move: 'POST /api/leads/:id/move - Mover lead entre colunas',
-        column_leads: 'GET /api/leads/column/:column_id - Listar leads de uma coluna'
+        column_leads: 'GET /api/leads/column/:column_id - Listar leads de uma coluna',
+        add_attachment: 'POST /api/leads/attachments/:id - Anexar documento via base64',
+        list_attachments: 'GET /api/leads/attachments/:id - Listar anexos de um lead',
+        delete_attachment: 'DELETE /api/leads/attachments/:id/:attachment_id - Deletar anexo'
       },
       pipelines: {
         list: 'GET /api/pipelines - Listar pipelines',
@@ -219,7 +224,32 @@ app.get('/', (req, res) => {
         balance: 'GET /api/credits/balance - Obter saldo atual de créditos',
         usage_stats: 'GET /api/credits/usage-stats - Obter estatísticas de uso',
         transactions: 'GET /api/credits/transactions - Listar transações de créditos'
+      },
+      attachments: {
+        add: 'POST /api/leads/attachments/:leadId - Anexar documento via base64',
+        list: 'GET /api/leads/attachments/:leadId - Listar anexos do lead',
+        delete: 'DELETE /api/leads/attachments/:leadId/:attachmentId - Deletar anexo'
       }
+    },
+    lead_attachments: {
+      supported_categories: ['document', 'image', 'contract', 'proposal', 'other'],
+      supported_formats: {
+        documents: ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'],
+        images: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+        spreadsheets: ['application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+        presentations: ['application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation']
+      },
+      max_file_size: '50MB',
+      storage_location: 'Supabase Storage bucket "media"',
+      storage_path_pattern: 'lead-attachments/{company_id}/lead_{lead_id}_{timestamp}_{filename}',
+      soft_delete: true,
+             api_access: {
+         add: 'POST /api/leads/attachments/:id - Upload via base64',
+         list: 'GET /api/leads/attachments/:id - Listar todos anexos',
+         delete: 'DELETE /api/leads/attachments/:id/:attachment_id - Remover anexo'
+       },
+      preview_support: 'Arquivos podem ser visualizados no frontend via modal (PDFs, imagens, texto)',
+      note: 'Arquivos são convertidos de base64 para buffer e salvos com URL pública acessível. Metadata inclui informações da API Key usada.'
     },
     agent_control_actions: {
       assign_ai: 'Atribuir agente IA à conversa',
@@ -315,7 +345,77 @@ app.get('/', (req, res) => {
             column_id: 'column-uuid',
             position: 0
           }
-        }
+        },
+                 add_attachment: {
+           url: 'POST /api/leads/attachments/lead-uuid',
+           headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            file_base64: 'JVBERi0xLjQKJcOkw7zDtsO...', // PDF em base64
+            file_name: 'contrato.pdf',
+            file_type: 'application/pdf',
+            description: 'Contrato assinado pelo cliente',
+            category: 'contract'
+          },
+          response: {
+            success: true,
+            message: 'Anexo adicionado com sucesso ao lead',
+            data: {
+              attachment_id: 'uuid-do-anexo',
+              lead_id: 'uuid-do-lead',
+              lead_title: 'Nome do Lead',
+              file_name: 'contrato.pdf',
+              file_type: 'application/pdf',
+              file_size: 1024000,
+              file_size_formatted: '1000 KB',
+              file_url: 'https://projeto.supabase.co/storage/v1/object/public/media/lead-attachments/...',
+              category: 'contract',
+              description: 'Contrato assinado pelo cliente',
+              uploaded_at: '2024-01-15T10:30:00Z',
+              uploaded_via: 'api'
+                         }
+           }
+         },
+         list_attachments: {
+           url: 'GET /api/leads/attachments/lead-uuid',
+           headers: { 'Authorization': 'Bearer zio_your_api_key' },
+           response: {
+             success: true,
+             data: {
+               lead_id: 'uuid-do-lead',
+               lead_title: 'Nome do Lead',
+               attachments_count: 2,
+               attachments: [
+                 {
+                   attachment_id: 'uuid-anexo-1',
+                   file_name: 'contrato.pdf',
+                   file_type: 'application/pdf',
+                   file_size: 1024000,
+                   file_size_formatted: '1000 KB',
+                   file_url: 'https://projeto.supabase.co/storage/v1/object/public/media/...',
+                   description: 'Contrato assinado',
+                   category: 'contract',
+                   uploaded_by_name: 'API',
+                   uploaded_at: '2024-01-15T10:30:00Z',
+                   created_at: '2024-01-15T10:30:00Z'
+                 }
+               ]
+             }
+           }
+         },
+         delete_attachment: {
+           url: 'DELETE /api/leads/attachments/lead-uuid/attachment-uuid',
+           headers: { 'Authorization': 'Bearer zio_your_api_key' },
+           response: {
+             success: true,
+             message: 'Anexo removido com sucesso',
+             data: {
+               attachment_id: 'uuid-do-anexo',
+               lead_id: 'uuid-do-lead',
+               file_name: 'contrato.pdf',
+               deleted_at: '2024-01-15T11:00:00Z'
+             }
+           }
+         }
       },
       pipelines: {
         list_pipelines: {
@@ -402,6 +502,27 @@ app.get('/', (req, res) => {
           url: 'GET /api/credits/transactions?limit=20&type=usage',
           headers: { 'Authorization': 'Bearer zio_your_api_key' }
         }
+      },
+      attachments: {
+        add_attachment: {
+          url: 'POST /api/leads/attachments/lead-uuid',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' },
+          body: {
+            file_base64: 'JVBERi0xLjQKJcOkw7zDtsO...',
+            file_name: 'proposta_comercial.pdf',
+            file_type: 'application/pdf',
+            description: 'Proposta comercial para o cliente',
+            category: 'proposal'
+          }
+        },
+        list_attachments: {
+          url: 'GET /api/leads/attachments/lead-uuid',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        },
+        delete_attachment: {
+          url: 'DELETE /api/leads/attachments/lead-uuid/attachment-uuid',
+          headers: { 'Authorization': 'Bearer zio_your_api_key' }
+        }
       }
     }
   });
@@ -413,7 +534,7 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     message: 'API funcionando normalmente',
     timestamp: new Date().toISOString(),
-    version: '3.1'
+    version: '3.2'
   });
 });
 
@@ -435,6 +556,7 @@ app.use('/api/messages', authenticateApiKey, messageRoutes);
 app.use('/api/conversation', authenticateApiKey, conversationRoutes);
 app.use('/api/calendar', authenticateApiKey, calendarRoutes);
 app.use('/api/leads', authenticateApiKey, leadsRoutes);
+app.use('/api/leads/attachments', authenticateApiKey, attachmentRoutes);
 app.use('/api/pipelines', authenticateApiKey, pipelinesRoutes);
 app.use('/api/columns', authenticateApiKey, columnsRoutes);
 app.use('/api/credits', authenticateApiKey, creditsRoutes);
