@@ -192,6 +192,29 @@ async function getCompanyTimezone(companyId, supabase) {
   }
 }
 
+// ✅ HELPER NOVO: Converter "primary" para email real se necessário
+async function resolveGoogleCalendarId(calendarId, companyId, supabase) {
+  if (calendarId !== 'primary') {
+    return calendarId; // Se não for "primary", retorna como está
+  }
+  
+  // Para "primary", buscar qual email real está sendo usado nos appointments desta empresa
+  const { data: sampleAppointment } = await supabase
+    .from('appointments')
+    .select('google_calendar_id')
+    .eq('company_id', companyId)
+    .not('google_calendar_id', 'is', null)
+    .not('google_calendar_id', 'eq', 'primary')
+    .limit(1)
+    .single();
+  
+  if (sampleAppointment?.google_calendar_id) {
+    return sampleAppointment.google_calendar_id;
+  }
+  
+  return calendarId; // Fallback para o valor original
+}
+
 // ✅ HELPER NOVO: Validar se calendar_id pertence à empresa e está ativo
 async function validateCalendarId(calendarId, companyId, supabase) {
   try {
@@ -339,12 +362,19 @@ router.get('/availability/:date', async (req, res) => {
 
     console.log(`🔍 Verificando disponibilidade para ${date} entre ${start_hour} e ${end_hour} na agenda ${calendarValidation.integration.calendar_name}`);
 
-    // ✅ CORRIGIDO: Buscar appointments da agenda específica usando google_calendar_id
+    // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real dos appointments
+    const googleCalendarIdToSearch = await resolveGoogleCalendarId(
+      calendarValidation.integration.calendar_id, 
+      company.id, 
+      req.supabase
+    );
+
+    // ✅ CORRIGIDO: Buscar appointments da agenda específica usando google_calendar_id real
     const { data: appointments, error } = await req.supabase
       .from('appointments')
       .select('id, title, start_time, end_time, status, google_calendar_id')
       .eq('company_id', company.id)
-      .eq('google_calendar_id', calendarValidation.integration.calendar_id)
+      .eq('google_calendar_id', googleCalendarIdToSearch)
       .gte('start_time', startDateTime)
       .lte('end_time', endDateTime)
       .neq('status', 'cancelled')
@@ -481,12 +511,19 @@ router.post('/schedule', async (req, res) => {
       }
     }
 
-    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica
+    // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real para verificar conflitos
+    const googleCalendarIdForConflicts = await resolveGoogleCalendarId(
+      calendarValidation.integration.calendar_id, 
+      company.id, 
+      req.supabase
+    );
+
+    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica usando email real
     const { data: conflicts, error: conflictError } = await req.supabase
       .from('appointments')
       .select('id, title, start_time, end_time')
       .eq('company_id', company.id)
-      .eq('google_calendar_id', calendarValidation.integration.calendar_id)
+      .eq('google_calendar_id', googleCalendarIdForConflicts)
       .neq('status', 'cancelled')
       .or(`and(start_time.lte.${start_time},end_time.gte.${start_time}),and(start_time.lte.${end_time},end_time.gte.${end_time}),and(start_time.gte.${start_time},end_time.lte.${end_time})`);
 
@@ -534,7 +571,7 @@ router.post('/schedule', async (req, res) => {
         end_time,
         location,
         attendees: attendeesJson,
-        google_calendar_id: calendarValidation.integration.calendar_id, // Email da agenda do Google
+        google_calendar_id: googleCalendarIdForConflicts, // Email real da agenda do Google
         create_meet: create_google_meet,
         lead_id,
         all_day,
@@ -729,23 +766,11 @@ router.get('/appointments', async (req, res) => {
       }
       
       // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real dos appointments
-      let googleCalendarIdToSearch = calendarValidation.integration.calendar_id;
-      
-      if (googleCalendarIdToSearch === 'primary') {
-        // Para "primary", buscar qual email real está sendo usado nos appointments desta empresa
-        const { data: sampleAppointment } = await req.supabase
-          .from('appointments')
-          .select('google_calendar_id')
-          .eq('company_id', company.id)
-          .not('google_calendar_id', 'is', null)
-          .not('google_calendar_id', 'eq', 'primary')
-          .limit(1)
-          .single();
-        
-        if (sampleAppointment?.google_calendar_id) {
-          googleCalendarIdToSearch = sampleAppointment.google_calendar_id;
-        }
-      }
+      const googleCalendarIdToSearch = await resolveGoogleCalendarId(
+        calendarValidation.integration.calendar_id, 
+        company.id, 
+        req.supabase
+      );
       query = query.eq('google_calendar_id', googleCalendarIdToSearch);
     }
 
@@ -792,31 +817,7 @@ router.get('/appointments', async (req, res) => {
       });
     }
 
-    // 🔍 DEBUG: Verificar appointments encontrados e total da empresa
-    console.log(`📋 Appointments encontrados: ${appointments?.length || 0}`);
-    
-    // Verificar total de appointments da empresa (sem filtro)
-    const { data: allAppointments, error: allError } = await req.supabase
-      .from('appointments')
-      .select('id, title, google_calendar_id')
-      .eq('company_id', company.id);
-    
-    if (!allError) {
-      console.log(`📊 Total de appointments da empresa: ${allAppointments?.length || 0}`);
-      const uniqueCalendarIds = [...new Set(allAppointments.map(apt => apt.google_calendar_id).filter(Boolean))];
-      console.log(`📅 Google Calendar IDs únicos encontrados:`, uniqueCalendarIds);
-      
-      // Verificar integrações ativas da empresa
-      const { data: integrations, error: intError } = await req.supabase
-        .from('google_calendar_integrations')
-        .select('id, calendar_id, calendar_name, status, is_active')
-        .eq('company_id', company.id);
-      
-      if (!intError) {
-        console.log(`🔗 Integrações de calendário encontradas:`, 
-          integrations.map(i => `${i.id} -> ${i.calendar_id} (${i.calendar_name}) - ${i.status}/${i.is_active ? 'ativo' : 'inativo'}`));
-      }
-    }
+
 
     // ✅ CORRIGIDO: Buscar informações das agendas, leads e usuários separadamente
     let calendarInfoMap = {};
@@ -994,9 +995,17 @@ router.put('/appointments/:id', async (req, res) => {
           message: calendarValidation.error
         });
       }
-      // Se está mudando de agenda, atualizar o target
-      if (calendarValidation.integration.calendar_id !== existingAppointment.google_calendar_id) {
-        targetGoogleCalendarId = calendarValidation.integration.calendar_id;
+      
+      // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real
+      const newGoogleCalendarId = await resolveGoogleCalendarId(
+        calendarValidation.integration.calendar_id, 
+        company.id, 
+        req.supabase
+      );
+      
+      // Se está mudando de agenda, atualizar o target com email real
+      if (newGoogleCalendarId !== existingAppointment.google_calendar_id) {
+        targetGoogleCalendarId = newGoogleCalendarId;
       }
     }
 
