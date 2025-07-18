@@ -321,18 +321,25 @@ async function checkGoogleCalendarIntegration(companyId, supabase) {
   };
 }
 
-// ✅ 1. ENDPOINT: Verificar disponibilidade de horário (MODIFICADO - requer calendar_id)
-router.get('/availability/:date', async (req, res) => {
+// ✅ 1. ENDPOINT: Verificar disponibilidade de horário (MODIFICADO - usa start_time/end_time ISO)
+router.get('/availability', async (req, res) => {
   try {
     const { company } = req;
-    const { date } = req.params;
-    const { start_hour = '08:00', end_hour = '18:00', calendar_id } = req.query;
+    const { start_time, end_time, calendar_id } = req.query;
 
     // ✅ NOVO: Validar calendar_id obrigatório
     if (!calendar_id) {
       return res.status(400).json({
         error: 'Parâmetro obrigatório faltando',
         message: 'calendar_id é obrigatório. Use GET /api/calendar/integrations para listar as agendas disponíveis'
+      });
+    }
+
+    // ✅ NOVO: Validar start_time e end_time obrigatórios
+    if (!start_time || !end_time) {
+      return res.status(400).json({
+        error: 'Parâmetros obrigatórios faltando',
+        message: 'start_time e end_time são obrigatórios no formato ISO 8601 (ex: 2025-07-07T11:30:00)'
       });
     }
 
@@ -345,22 +352,30 @@ router.get('/availability/:date', async (req, res) => {
       });
     }
 
-    // Validar data
-    if (!isValidDate(date)) {
+    // Validar formato das datas ISO
+    if (!isValidDate(start_time) || !isValidDate(end_time)) {
       return res.status(400).json({
-        error: 'Data inválida',
-        message: 'Use formato YYYY-MM-DD'
+        error: 'Datas inválidas',
+        message: 'Use formato ISO 8601 (ex: 2025-07-07T11:30:00 ou 2025-07-07T11:30:00Z)'
       });
     }
 
-    // Obter timezone da empresa
+    // Verificar se end_time é após start_time
+    if (new Date(end_time) <= new Date(start_time)) {
+      return res.status(400).json({
+        error: 'Período inválido',
+        message: 'end_time deve ser posterior ao start_time'
+      });
+    }
+
+    // Obter timezone da empresa (busca em users.timezone)
     const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
 
-    // Definir período do dia considerando timezone da empresa
-    const startDateTime = formatToISO(date, start_hour, companyTimezone);
-    const endDateTime = formatToISO(date, end_hour, companyTimezone);
+    // Usar datas ISO diretamente (não precisa converter)
+    const startDateTime = start_time;
+    const endDateTime = end_time;
 
-    console.log(`🔍 Verificando disponibilidade para ${date} entre ${start_hour} e ${end_hour} na agenda ${calendarValidation.integration.calendar_name}`);
+    console.log(`🔍 Verificando disponibilidade de ${startDateTime} até ${endDateTime} na agenda ${calendarValidation.integration.calendar_name}`);
 
     // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real dos appointments
     const googleCalendarIdToSearch = await resolveGoogleCalendarId(
@@ -402,13 +417,12 @@ router.get('/availability/:date', async (req, res) => {
 
     return res.json({
       success: true,
-      date,
       is_free: isFree,
       total_appointments: busySlots.length,
       busy_slots: busySlots,
       availability_window: {
-        start: startDateTime,
-        end: endDateTime
+        start_time: startDateTime,
+        end_time: endDateTime
       },
       calendar_info: {
         id: calendarValidation.integration.id,
@@ -731,9 +745,11 @@ router.get('/appointments', async (req, res) => {
   try {
     const { company } = req;
     const { 
-      date,
-      start_date,
-      end_date,
+      date,           // LEGACY: formato YYYY-MM-DD
+      start_date,     // LEGACY: formato YYYY-MM-DD  
+      end_date,       // LEGACY: formato YYYY-MM-DD
+      start_time,     // NOVO: formato ISO 8601 (ex: 2025-07-07T11:30:00)
+      end_time,       // NOVO: formato ISO 8601 (ex: 2025-07-07T11:30:00)
       status,
       lead_id,
       calendar_id,
@@ -774,22 +790,43 @@ router.get('/appointments', async (req, res) => {
       query = query.eq('google_calendar_id', googleCalendarIdToSearch);
     }
 
-    // Filtros de data
-    if (date) {
+    // ✅ FILTROS DE DATA: Suporte para formatos antigos (LEGACY) e novos (ISO 8601)
+    if (start_time && end_time) {
+      // ✅ NOVO FORMATO: start_time/end_time ISO 8601 (ex: 2025-07-07T11:30:00)
+      if (!isValidDate(start_time) || !isValidDate(end_time)) {
+        return res.status(400).json({
+          error: 'Datas inválidas',
+          message: 'Use formato ISO 8601 (ex: 2025-07-07T11:30:00 ou 2025-07-07T11:30:00Z)'
+        });
+      }
+      
+      if (new Date(end_time) <= new Date(start_time)) {
+        return res.status(400).json({
+          error: 'Período inválido',
+          message: 'end_time deve ser posterior ao start_time'
+        });
+      }
+      
+      query = query.gte('start_time', start_time).lte('start_time', end_time);
+      
+    } else if (date) {
+      // ✅ FORMATO LEGACY: date YYYY-MM-DD (busca dia inteiro)
       if (!isValidDate(date)) {
         return res.status(400).json({
           error: 'Data inválida',
-          message: 'Use formato YYYY-MM-DD'
+          message: 'Use formato YYYY-MM-DD ou prefira start_time/end_time em ISO 8601'
         });
       }
       const startOfDay = formatToISO(date, '00:00', companyTimezone);
       const endOfDay = formatToISO(date, '23:59', companyTimezone);
       query = query.gte('start_time', startOfDay).lte('start_time', endOfDay);
+      
     } else if (start_date && end_date) {
+      // ✅ FORMATO LEGACY: start_date/end_date YYYY-MM-DD 
       if (!isValidDate(start_date) || !isValidDate(end_date)) {
         return res.status(400).json({
           error: 'Datas inválidas',
-          message: 'Use formato YYYY-MM-DD'
+          message: 'Use formato YYYY-MM-DD ou prefira start_time/end_time em ISO 8601'
         });
       }
       query = query.gte('start_time', start_date).lte('end_time', end_date);
@@ -924,9 +961,14 @@ router.get('/appointments', async (req, res) => {
         has_more: formattedAppointments.length === parseInt(limit)
       },
       filters: {
+        // Novos filtros preferidos (ISO 8601)
+        start_time,
+        end_time,
+        // Filtros legacy (compatibilidade)
         date,
         start_date,
         end_date,
+        // Outros filtros
         status,
         lead_id,
         calendar_id
@@ -1514,7 +1556,9 @@ module.exports = router;
 /*
 🔥 INTEGRAÇÃO COMPLETA GOOGLE CALENDAR + API 🔥
 
+✅ NOVO: Formato ISO 8601 unificado para data/hora (2025-07-07T11:30:00)
 ✅ AGORA quando um usuário agenda via API, o evento É CRIADO AUTOMATICAMENTE no Google Calendar!
+✅ Timezone buscado automaticamente da tabela users.timezone da empresa
 
 📋 COMO USAR:
 
@@ -1536,13 +1580,29 @@ module.exports = router;
      }
    }
 
-2. AGENDAR (cria automaticamente no Google Calendar):
+2. VERIFICAR DISPONIBILIDADE (novo formato ISO):
+   GET /api/calendar/availability?calendar_id=550e8400-e29b-41d4-a716-446655440001&start_time=2025-07-07T09:00:00&end_time=2025-07-07T18:00:00
+   
+   Response:
+   {
+     "success": true,
+     "is_free": false,
+     "total_appointments": 2,
+     "busy_slots": [...],
+     "availability_window": {
+       "start_time": "2025-07-07T09:00:00",
+       "end_time": "2025-07-07T18:00:00"
+     },
+     "timezone": "America/Sao_Paulo"
+   }
+
+3. AGENDAR (cria automaticamente no Google Calendar):
    POST /api/calendar/schedule
    {
      "title": "Reunião com Cliente",
      "description": "Apresentação da proposta",
-     "start_time": "2024-01-15T10:00:00Z",
-     "end_time": "2024-01-15T11:00:00Z",
+     "start_time": "2025-07-07T11:30:00",
+     "end_time": "2025-07-07T12:30:00",
      "calendar_id": "550e8400-e29b-41d4-a716-446655440001",
      "create_google_meet": true,
      "attendees": ["cliente@empresa.com"]
@@ -1562,6 +1622,21 @@ module.exports = router;
      }
    }
 
+4. LISTAR AGENDAMENTOS (novo formato ISO preferido):
+   GET /api/calendar/appointments?calendar_id=550e8400-e29b-41d4-a716-446655440001&start_time=2025-07-07T00:00:00&end_time=2025-07-07T23:59:59
+   
+   OU formato legacy (ainda suportado):
+   GET /api/calendar/appointments?calendar_id=550e8400-e29b-41d4-a716-446655440001&date=2025-07-07
+
+🕐 FORMATOS DE DATA/HORA ACEITOS:
+- PREFERIDO: ISO 8601 → "2025-07-07T11:30:00" ou "2025-07-07T11:30:00Z"
+- LEGACY: Apenas data → "2025-07-07" (busca dia inteiro)
+
+🌍 TIMEZONE:
+- Busca automaticamente de users.timezone da empresa
+- Fallback: company_settings.timezone
+- Padrão: "America/Sao_Paulo"
+
 🔄 TOKENS REFRESH AUTOMÁTICO:
 - Se o access_token estiver vencendo, a API renova automaticamente usando refresh_token
 - Salva novos tokens no banco para próximas chamadas
@@ -1571,9 +1646,11 @@ module.exports = router;
 - Integração deve estar ativa (status: connected)
 - Access token deve estar válido (ou renovável)
 - Conflitos de horário são verificados
+- Formato ISO 8601 validado
 
 🛠️ TROUBLESHOOTING:
 - Se falhar: verifique se Google Calendar está conectado
 - Reconecte via frontend se necessário
 - Logs detalhados no console para debug
+- Use formato ISO 8601 para melhor compatibilidade
 */ 
