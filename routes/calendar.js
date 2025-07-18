@@ -713,8 +713,8 @@ router.post('/schedule', async (req, res) => {
         const googleEventData = {
           title,
           description,
-          start_time,
-          end_time,
+          start_time: startTimeUTC,  // ✅ CORRIGIDO: Usar horário UTC convertido
+          end_time: endTimeUTC,      // ✅ CORRIGIDO: Usar horário UTC convertido
           location,
           attendees: attendeesJson.map(att => att.email).filter(Boolean),
           all_day,
@@ -1112,7 +1112,8 @@ router.put('/appointments/:id', async (req, res) => {
       status,
       create_google_meet,
       all_day,
-      calendar_id // ✅ NOVO: Permitir trocar de agenda
+      calendar_id, // ✅ NOVO: Permitir trocar de agenda
+      created_by_agent // ✅ NOVO: Permitir atualizar campo de agente IA
     } = req.body;
 
     // Obter timezone da empresa
@@ -1174,25 +1175,21 @@ router.put('/appointments/:id', async (req, res) => {
       });
     }
 
-    // ✅ NOVO: Converter horários para UTC se fornecidos
+    // ✅ CORRIGIDO: Converter horários para UTC se fornecidos (mesma lógica do POST)
     let startTimeUTC, endTimeUTC;
     
     if (start_time) {
-      if (start_time.includes('Z') || start_time.includes('+')) {
-        startTimeUTC = start_time;
-      } else {
-        const [startDate, startTimeOnly] = start_time.includes('T') ? start_time.split('T') : [start_time, '00:00:00'];
-        startTimeUTC = formatToISO(startDate, startTimeOnly.split(':').slice(0, 2).join(':'), companyTimezone);
-      }
+      // Remover sufixos de timezone para interpretar como horário da empresa
+      const cleanStartTime = start_time.replace(/Z$|[+-]\d{2}:\d{2}$/, '');
+      const [startDate, startTimeOnly] = cleanStartTime.includes('T') ? cleanStartTime.split('T') : [cleanStartTime, '00:00:00'];
+      startTimeUTC = formatToISO(startDate, startTimeOnly.split('.')[0].split(':').slice(0, 2).join(':'), companyTimezone);
     }
     
     if (end_time) {
-      if (end_time.includes('Z') || end_time.includes('+')) {
-        endTimeUTC = end_time;
-      } else {
-        const [endDate, endTimeOnly] = end_time.includes('T') ? end_time.split('T') : [end_time, '00:00:00'];
-        endTimeUTC = formatToISO(endDate, endTimeOnly.split(':').slice(0, 2).join(':'), companyTimezone);
-      }
+      // Remover sufixos de timezone para interpretar como horário da empresa
+      const cleanEndTime = end_time.replace(/Z$|[+-]\d{2}:\d{2}$/, '');
+      const [endDate, endTimeOnly] = cleanEndTime.includes('T') ? cleanEndTime.split('T') : [cleanEndTime, '00:00:00'];
+      endTimeUTC = formatToISO(endDate, endTimeOnly.split('.')[0].split(':').slice(0, 2).join(':'), companyTimezone);
     }
 
     // Verificar se end_time é após start_time (usando horários UTC para comparação)
@@ -1250,6 +1247,7 @@ router.put('/appointments/:id', async (req, res) => {
     if (create_google_meet !== undefined) updateData.create_meet = create_google_meet;
     if (all_day !== undefined) updateData.all_day = all_day;
     if (calendar_id !== undefined) updateData.google_calendar_id = targetGoogleCalendarId;
+    if (created_by_agent !== undefined) updateData.created_by_agent = created_by_agent; // ✅ NOVO: Campo agente IA
     
     if (attendees !== undefined) {
       updateData.attendees = Array.isArray(attendees) 
@@ -1318,13 +1316,13 @@ router.put('/appointments/:id', async (req, res) => {
             if (location !== undefined) googleEventUpdates.location = location;
             if (start_time !== undefined) {
               googleEventUpdates.start = {
-                dateTime: start_time,
+                dateTime: startTimeUTC,  // ✅ CORRIGIDO: Usar horário UTC convertido
                 timeZone: targetIntegration.timezone || 'America/Sao_Paulo'
               };
             }
             if (end_time !== undefined) {
               googleEventUpdates.end = {
-                dateTime: end_time,
+                dateTime: endTimeUTC,    // ✅ CORRIGIDO: Usar horário UTC convertido
                 timeZone: targetIntegration.timezone || 'America/Sao_Paulo'
               };
             }
