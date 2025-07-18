@@ -113,22 +113,25 @@ function isValidDate(dateString) {
   return !isNaN(date.getTime());
 }
 
-// ✅ HELPER: Formatar data para ISO string considerando timezone
+// ✅ HELPER: Formatar data para ISO string considerando timezone - CORRIGIDO
 function formatToISO(dateString, time = null, timezone = 'America/Sao_Paulo') {
   try {
+    let localDateTime;
     if (time) {
-      // Criar data no timezone específico
-      const localDateTime = `${dateString}T${time}:00`;
-      const date = new Date(localDateTime);
-      
-      // Ajustar para o timezone especificado
-      const offsetMs = getTimezoneOffset(timezone, date);
-      const adjustedDate = new Date(date.getTime() - offsetMs);
-      
-      return adjustedDate.toISOString();
+      localDateTime = `${dateString}T${time}:00`;
+    } else {
+      localDateTime = dateString.includes('T') ? dateString : `${dateString}T00:00:00`;
     }
     
-    const date = new Date(dateString);
+    // Para São Paulo (UTC-3), adicionamos 3 horas para converter para UTC
+    if (timezone === 'America/Sao_Paulo') {
+      const localDate = new Date(localDateTime);
+      const utcDate = new Date(localDate.getTime() + (3 * 60 * 60 * 1000)); // +3 horas
+      return utcDate.toISOString();
+    }
+    
+    // Para outros timezones, usar método original (fallback)
+    const date = new Date(localDateTime);
     const offsetMs = getTimezoneOffset(timezone, date);
     const adjustedDate = new Date(date.getTime() - offsetMs);
     
@@ -189,33 +192,6 @@ async function getCompanyTimezone(companyId, supabase) {
   } catch (error) {
     console.warn('⚠️ Erro ao obter timezone da empresa, usando padrão:', error);
     return 'America/Sao_Paulo';
-  }
-}
-
-// ✅ HELPER NOVO: Converter horário local para UTC para consultas no banco
-function convertLocalToUTC(localDateTime, timezone = 'America/Sao_Paulo') {
-  try {
-    // Se já tem timezone explícito (+00:00, -03:00, etc), retornar como está
-    if (localDateTime.includes('+') || localDateTime.endsWith('Z')) {
-      return localDateTime;
-    }
-    
-    // Criar data assumindo que está no timezone local especificado
-    const date = new Date(localDateTime);
-    
-    // Obter offset do timezone (em minutos)
-    const tempDate = new Date();
-    const utcTime = tempDate.toLocaleString('en-US', { timeZone: 'UTC' });
-    const localTime = tempDate.toLocaleString('en-US', { timeZone: timezone });
-    const offsetMs = new Date(utcTime).getTime() - new Date(localTime).getTime();
-    
-    // Aplicar offset para converter para UTC
-    const utcDate = new Date(date.getTime() + offsetMs);
-    
-    return utcDate.toISOString();
-  } catch (error) {
-    console.warn('⚠️ Erro ao converter timezone, usando horário original:', error);
-    return localDateTime;
   }
 }
 
@@ -398,12 +374,24 @@ router.get('/availability', async (req, res) => {
     // Obter timezone da empresa (busca em users.timezone)
     const companyTimezone = await getCompanyTimezone(company.id, req.supabase);
 
-    // ✅ CORRIGIDO: Converter horários do timezone local para UTC para consulta no banco
-    const startDateTime = convertLocalToUTC(start_time, companyTimezone);
-    const endDateTime = convertLocalToUTC(end_time, companyTimezone);
+    // ✅ CORRIGIDO: Converter horários de timezone local para UTC para consulta no banco
+    let startDateTimeUTC, endDateTimeUTC;
+    
+    if (start_time.includes('Z') || start_time.includes('+')) {
+      // Se já tem timezone explícito (Z ou +/-), usar diretamente
+      startDateTimeUTC = start_time;
+      endDateTimeUTC = end_time;
+    } else {
+      // Se é horário local (sem timezone), assumir que é no timezone da empresa e converter para UTC
+      const [startDate, startTime] = start_time.includes('T') ? start_time.split('T') : [start_time, '00:00:00'];
+      const [endDate, endTime] = end_time.includes('T') ? end_time.split('T') : [end_time, '00:00:00'];
+      
+      startDateTimeUTC = formatToISO(startDate, startTime.split(':').slice(0, 2).join(':'), companyTimezone);
+      endDateTimeUTC = formatToISO(endDate, endTime.split(':').slice(0, 2).join(':'), companyTimezone);
+    }
 
     console.log(`🔍 Verificando disponibilidade de ${start_time} até ${end_time} (timezone: ${companyTimezone})`);
-    console.log(`🔄 Convertido para UTC: ${startDateTime} até ${endDateTime}`);
+    console.log(`🔄 Convertido para UTC: ${startDateTimeUTC} até ${endDateTimeUTC}`);
 
     // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real dos appointments
     const googleCalendarIdToSearch = await resolveGoogleCalendarId(
@@ -412,14 +400,14 @@ router.get('/availability', async (req, res) => {
       req.supabase
     );
 
-    // ✅ CORRIGIDO: Buscar appointments da agenda específica usando google_calendar_id real
+    // ✅ CORRIGIDO: Buscar appointments da agenda específica usando horários UTC convertidos
     const { data: appointments, error } = await req.supabase
       .from('appointments')
       .select('id, title, start_time, end_time, status, google_calendar_id')
       .eq('company_id', company.id)
       .eq('google_calendar_id', googleCalendarIdToSearch)
-      .gte('start_time', startDateTime)
-      .lte('end_time', endDateTime)
+      .gte('start_time', startDateTimeUTC)
+      .lte('end_time', endDateTimeUTC)
       .neq('status', 'cancelled')
       .order('start_time', { ascending: true });
 
@@ -449,8 +437,8 @@ router.get('/availability', async (req, res) => {
       total_appointments: busySlots.length,
       busy_slots: busySlots,
       availability_window: {
-        start_time: start_time,  // ✅ Retornar horário original do request
-        end_time: end_time       // ✅ Retornar horário original do request
+        start_time: start_time,
+        end_time: end_time
       },
       calendar_info: {
         id: calendarValidation.integration.id,
@@ -463,10 +451,13 @@ router.get('/availability', async (req, res) => {
         name: company.name
       },
       debug: {
-        original_times: { start_time, end_time },
-        converted_utc_times: { startDateTime, endDateTime },
         googleCalendarIdToSearch,
-        totalAppointmentsInPeriod: busySlots.length
+        totalAppointmentsInPeriod: appointments.length,
+        filteredAppointments: busySlots.length,
+        utcSearchWindow: {
+          start_utc: startDateTimeUTC,
+          end_utc: endDateTimeUTC
+        }
       }
     });
 
@@ -566,21 +557,14 @@ router.post('/schedule', async (req, res) => {
       req.supabase
     );
 
-    // ✅ CORRIGIDO: Converter horários para UTC antes de verificar conflitos
-    const startTimeUTC = convertLocalToUTC(start_time, companyTimezone);
-    const endTimeUTC = convertLocalToUTC(end_time, companyTimezone);
-    
-    console.log(`🔍 Verificando conflitos: ${start_time} - ${end_time} (${companyTimezone})`);
-    console.log(`🔄 Convertido para UTC: ${startTimeUTC} - ${endTimeUTC}`);
-    
-    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica usando horários UTC
+    // ✅ CORRIGIDO: Verificar conflitos de horário na agenda específica usando email real
     const { data: conflicts, error: conflictError } = await req.supabase
       .from('appointments')
       .select('id, title, start_time, end_time')
       .eq('company_id', company.id)
       .eq('google_calendar_id', googleCalendarIdForConflicts)
       .neq('status', 'cancelled')
-      .or(`and(start_time.lte.${startTimeUTC},end_time.gte.${startTimeUTC}),and(start_time.lte.${endTimeUTC},end_time.gte.${endTimeUTC}),and(start_time.gte.${startTimeUTC},end_time.lte.${endTimeUTC})`);
+      .or(`and(start_time.lte.${start_time},end_time.gte.${start_time}),and(start_time.lte.${end_time},end_time.gte.${end_time}),and(start_time.gte.${start_time},end_time.lte.${end_time})`);
 
     if (conflictError) {
       console.error('❌ Erro ao verificar conflitos:', conflictError);
@@ -1120,13 +1104,6 @@ router.put('/appointments/:id', async (req, res) => {
 
     // ✅ CORRIGIDO: Verificar conflitos na agenda específica (se mudando horário ou agenda)
     if (start_time || end_time || calendar_id) {
-      // ✅ CONVERTER: Horários para UTC antes de verificar conflitos
-      const newStartTimeUTC = convertLocalToUTC(newStartTime, companyTimezone);
-      const newEndTimeUTC = convertLocalToUTC(newEndTime, companyTimezone);
-      
-      console.log(`🔍 Verificando conflitos para edição: ${newStartTime} - ${newEndTime} (${companyTimezone})`);
-      console.log(`🔄 Convertido para UTC: ${newStartTimeUTC} - ${newEndTimeUTC}`);
-      
       const { data: conflicts, error: conflictError } = await req.supabase
         .from('appointments')
         .select('id, title, start_time, end_time')
@@ -1134,7 +1111,7 @@ router.put('/appointments/:id', async (req, res) => {
         .eq('google_calendar_id', targetGoogleCalendarId)
         .neq('id', id) // Excluir o próprio appointment
         .neq('status', 'cancelled')
-        .or(`and(start_time.lte.${newStartTimeUTC},end_time.gte.${newStartTimeUTC}),and(start_time.lte.${newEndTimeUTC},end_time.gte.${newEndTimeUTC}),and(start_time.gte.${newStartTimeUTC},end_time.lte.${newEndTimeUTC})`);
+        .or(`and(start_time.lte.${newStartTime},end_time.gte.${newStartTime}),and(start_time.lte.${newEndTime},end_time.gte.${newEndTime}),and(start_time.gte.${newStartTime},end_time.lte.${newEndTime})`);
 
       if (conflictError) {
         console.error('❌ Erro ao verificar conflitos:', conflictError);
