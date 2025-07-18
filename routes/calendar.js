@@ -708,8 +708,7 @@ router.get('/appointments', async (req, res) => {
         status, attendees, all_day, google_event_id, google_meet_link,
         lead_id, calendar_integration_id, created_at, updated_at,
         leads(id, title, status),
-        users!appointments_created_by_fkey(id, first_name, last_name, full_name),
-        google_calendar_integrations!appointments_calendar_integration_id_fkey(id, calendar_name, calendar_id)
+        users!appointments_created_by_fkey(id, first_name, last_name, full_name)
       `)
       .eq('company_id', company.id)
       .order('start_time', { ascending: true });
@@ -770,6 +769,32 @@ router.get('/appointments', async (req, res) => {
       });
     }
 
+    // ✅ CORRIGIDO: Buscar informações das agendas separadamente se necessário
+    let calendarInfoMap = {};
+    if (appointments.length > 0) {
+      // Buscar informações únicas das agendas usadas
+      const uniqueCalendarIds = [...new Set(appointments.map(apt => apt.calendar_integration_id).filter(Boolean))];
+      
+      if (uniqueCalendarIds.length > 0) {
+        const { data: calendars, error: calendarsError } = await req.supabase
+          .from('google_calendar_integrations')
+          .select('id, calendar_name, calendar_id')
+          .eq('company_id', company.id)
+          .in('id', uniqueCalendarIds);
+
+        if (!calendarsError && calendars) {
+          calendarInfoMap = calendars.reduce((map, cal) => {
+            map[cal.id] = {
+              id: cal.id,
+              name: cal.calendar_name,
+              calendar_id: cal.calendar_id
+            };
+            return map;
+          }, {});
+        }
+      }
+    }
+
     // Formatar resposta
     const formattedAppointments = appointments.map(apt => ({
       id: apt.id,
@@ -783,10 +808,10 @@ router.get('/appointments', async (req, res) => {
       all_day: apt.all_day,
       google_event_id: apt.google_event_id,
       google_meet_link: apt.google_meet_link,
-      calendar_info: apt.google_calendar_integrations ? {
+      calendar_info: apt.calendar_integration_id ? calendarInfoMap[apt.calendar_integration_id] || {
         id: apt.calendar_integration_id,
-        name: apt.google_calendar_integrations.calendar_name,
-        calendar_id: apt.google_calendar_integrations.calendar_id
+        name: "Agenda não encontrada",
+        calendar_id: "unknown"
       } : null,
       lead: apt.leads ? {
         id: apt.leads.id,
