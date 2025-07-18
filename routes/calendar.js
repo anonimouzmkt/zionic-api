@@ -1,6 +1,112 @@
 const express = require('express');
 const router = express.Router();
 
+// ✅ NOVO: Função helper para criar evento no Google Calendar
+async function createGoogleCalendarEvent(integration, eventData) {
+  const GOOGLE_API_BASE_URL = 'https://www.googleapis.com/calendar/v3';
+  
+  // Verificar se token ainda é válido ou precisa renovar
+  let accessToken = integration.access_token;
+  
+  // Verificar se token está próximo do vencimento (5 minutos antes)
+  if (integration.token_expires_at) {
+    const expiresAt = new Date(integration.token_expires_at);
+    const fiveMinutesFromNow = new Date(Date.now() + 5 * 60 * 1000);
+
+    if (expiresAt <= fiveMinutesFromNow && integration.refresh_token) {
+      console.log('🔄 Token expiring soon, refreshing...');
+      
+      try {
+        const newTokens = await refreshGoogleToken(integration);
+        accessToken = newTokens.access_token;
+        
+        // Atualizar tokens no banco (será feito pelo caller)
+        integration._needsTokenUpdate = {
+          access_token: newTokens.access_token,
+          refresh_token: newTokens.refresh_token || integration.refresh_token,
+          expires_in: newTokens.expires_in
+        };
+      } catch (refreshError) {
+        console.error('❌ Erro ao renovar token:', refreshError);
+        throw new Error('Token expirado e não foi possível renovar');
+      }
+    }
+  }
+
+  // Preparar dados do evento para Google Calendar
+  const googleEvent = {
+    summary: eventData.title,
+    description: eventData.description,
+    start: {
+      dateTime: eventData.start_time,
+      timeZone: integration.timezone || 'America/Sao_Paulo'
+    },
+    end: {
+      dateTime: eventData.end_time,
+      timeZone: integration.timezone || 'America/Sao_Paulo'
+    },
+    location: eventData.location,
+    attendees: eventData.attendees?.map(email => ({ email }))
+  };
+
+  // Adicionar Google Meet se solicitado
+  if (eventData.createMeet && integration.auto_create_meet) {
+    googleEvent.conferenceData = {
+      createRequest: {
+        requestId: `meet-${Date.now()}`,
+        conferenceSolutionKey: {
+          type: 'hangoutsMeet'
+        }
+      }
+    };
+  }
+
+  // Fazer chamada para API do Google Calendar
+  const url = `${GOOGLE_API_BASE_URL}/calendars/${integration.calendar_id}/events?conferenceDataVersion=1`;
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(googleEvent)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('❌ Google Calendar API Error:', errorText);
+    throw new Error(`Google Calendar API error: ${response.status} - ${errorText}`);
+  }
+
+  return await response.json();
+}
+
+// ✅ NOVO: Função helper para renovar token do Google
+async function refreshGoogleToken(integration) {
+  const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+  
+  const response = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({
+      refresh_token: integration.refresh_token,
+      client_id: integration.client_id,
+      client_secret: integration.client_secret,
+      grant_type: 'refresh_token'
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(`Token refresh failed: ${errorData.error_description || errorData.error}`);
+  }
+
+  return await response.json();
+}
+
 // ✅ HELPER: Validar formato de data
 function isValidDate(dateString) {
   const date = new Date(dateString);
@@ -89,9 +195,15 @@ async function getCompanyTimezone(companyId, supabase) {
 // ✅ HELPER NOVO: Validar se calendar_id pertence à empresa e está ativo
 async function validateCalendarId(calendarId, companyId, supabase) {
   try {
+    // ✅ CORRIGIDO: Buscar TODOS os campos necessários para o GoogleCalendarService
     const { data: integration, error } = await supabase
       .from('google_calendar_integrations')
-      .select('id, calendar_id, calendar_name, status, is_active, access_token, user_id')
+      .select(`
+        id, company_id, user_id, client_id, client_secret, redirect_uri,
+        access_token, refresh_token, token_expires_at, calendar_id, calendar_name,
+        status, is_active, timezone, auto_create_meet, sync_enabled, sync_token,
+        created_at, updated_at, last_sync_at
+      `)
       .eq('id', calendarId)
       .eq('company_id', companyId)
       .eq('is_active', true)
@@ -114,14 +226,30 @@ async function validateCalendarId(calendarId, companyId, supabase) {
       };
     }
 
+    // ✅ CORRIGIDO: Retornar objeto completo GoogleCalendarIntegration
     return {
       valid: true,
       integration: {
         id: integration.id,
+        company_id: integration.company_id,
+        user_id: integration.user_id,
+        client_id: integration.client_id,
+        client_secret: integration.client_secret,
+        redirect_uri: integration.redirect_uri,
+        access_token: integration.access_token,
+        refresh_token: integration.refresh_token,
+        token_expires_at: integration.token_expires_at,
         calendar_id: integration.calendar_id,
         calendar_name: integration.calendar_name,
-        user_id: integration.user_id,
-        access_token: integration.access_token
+        status: integration.status,
+        is_active: integration.is_active,
+        timezone: integration.timezone,
+        auto_create_meet: integration.auto_create_meet,
+        sync_enabled: integration.sync_enabled,
+        sync_token: integration.sync_token,
+        created_at: integration.created_at,
+        updated_at: integration.updated_at,
+        last_sync_at: integration.last_sync_at
       }
     };
   } catch (error) {
@@ -285,7 +413,7 @@ router.post('/schedule', async (req, res) => {
       location,
       attendees = [],
       lead_id,
-      create_meet = true,
+      create_google_meet = true,
       all_day = false,
       calendar_id
     } = req.body;
@@ -403,7 +531,7 @@ router.post('/schedule', async (req, res) => {
         location,
         attendees: attendeesJson,
         lead_id,
-        create_meet,
+        create_google_meet,
         all_day,
         status: 'scheduled'
       })
@@ -420,16 +548,107 @@ router.post('/schedule', async (req, res) => {
 
     console.log(`✅ Appointment criado: ${appointment.id}`);
 
-    // ✅ MODIFICADO: Usar a integração específica para sincronização
+    // ✅ NOVO: Criar evento automaticamente no Google Calendar
     let googleEventInfo = {
-      integration_status: 'sync_attempted',
-      message: `Sincronização com agenda ${calendarValidation.integration.calendar_name} será processada`,
+      integration_status: 'not_attempted',
+      message: 'Sincronização com Google Calendar não configurada',
       calendar_info: {
         id: calendarValidation.integration.id,
         name: calendarValidation.integration.calendar_name,
         calendar_id: calendarValidation.integration.calendar_id
       }
     };
+
+    // Verificar se a integração tem tokens válidos para criar no Google Calendar
+    if (calendarValidation.integration.access_token) {
+      try {
+        console.log(`🔄 Criando evento no Google Calendar...`);
+        
+        // Preparar dados do evento para Google Calendar
+        const googleEventData = {
+          title,
+          description,
+          start_time,
+          end_time,
+          location,
+          attendees: attendeesJson.map(att => att.email).filter(Boolean),
+          all_day,
+          createMeet: create_google_meet,
+          lead_id
+        };
+
+        // Criar evento no Google Calendar usando nossa função helper
+        const googleEvent = await createGoogleCalendarEvent(
+          calendarValidation.integration,
+          googleEventData
+        );
+
+        // ✅ NOVO: Se houve renovação de token, atualizar no banco
+        if (calendarValidation.integration._needsTokenUpdate) {
+          const tokenUpdate = calendarValidation.integration._needsTokenUpdate;
+          const expiresAt = new Date(Date.now() + tokenUpdate.expires_in * 1000);
+
+          const { error: tokenUpdateError } = await req.supabase
+            .from('google_calendar_integrations')
+            .update({
+              access_token: tokenUpdate.access_token,
+              refresh_token: tokenUpdate.refresh_token,
+              token_expires_at: expiresAt.toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', calendarValidation.integration.id);
+
+          if (tokenUpdateError) {
+            console.error('⚠️ Erro ao atualizar tokens renovados:', tokenUpdateError);
+          } else {
+            console.log('✅ Tokens renovados salvos com sucesso');
+          }
+        }
+
+        // Atualizar appointment com informações do Google Calendar
+        const { error: updateError } = await req.supabase
+          .from('appointments')
+          .update({
+            google_event_id: googleEvent.id,
+            google_meet_link: googleEvent.conferenceData?.entryPoints?.[0]?.uri || null
+          })
+          .eq('id', appointment.id);
+
+        if (updateError) {
+          console.error('❌ Erro ao atualizar appointment com dados do Google:', updateError);
+          googleEventInfo = {
+            integration_status: 'partial_success',
+            message: 'Evento criado no Google Calendar mas falha ao salvar referência',
+            google_event_id: googleEvent.id,
+            calendar_info: googleEventInfo.calendar_info
+          };
+        } else {
+          googleEventInfo = {
+            integration_status: 'success',
+            message: 'Evento criado com sucesso no Google Calendar',
+            google_event_id: googleEvent.id,
+            google_meet_link: googleEvent.conferenceData?.entryPoints?.[0]?.uri || null,
+            calendar_info: googleEventInfo.calendar_info
+          };
+          
+          // Atualizar dados do appointment retornado
+          appointment.google_event_id = googleEvent.id;
+          appointment.google_meet_link = googleEvent.conferenceData?.entryPoints?.[0]?.uri || null;
+        }
+
+        console.log(`✅ Evento criado no Google Calendar: ${googleEvent.id}`);
+        
+      } catch (googleError) {
+        console.error('❌ Erro ao criar evento no Google Calendar:', googleError);
+        googleEventInfo = {
+          integration_status: 'failed',
+          message: `Erro ao criar no Google Calendar: ${googleError.message}`,
+          calendar_info: googleEventInfo.calendar_info
+        };
+      }
+    } else {
+      googleEventInfo.message = 'Integração sem token de acesso válido. Reconecte o Google Calendar';
+    }
 
     return res.status(201).json({
       success: true,
@@ -628,7 +847,7 @@ router.put('/appointments/:id', async (req, res) => {
       location,
       attendees,
       status,
-      create_meet,
+      create_google_meet,
       all_day,
       calendar_id // ✅ NOVO: Permitir trocar de agenda
     } = req.body;
@@ -728,7 +947,7 @@ router.put('/appointments/:id', async (req, res) => {
     if (end_time !== undefined) updateData.end_time = end_time;
     if (location !== undefined) updateData.location = location;
     if (status !== undefined) updateData.status = status;
-    if (create_meet !== undefined) updateData.create_meet = create_meet;
+    if (create_google_meet !== undefined) updateData.create_google_meet = create_google_meet;
     if (all_day !== undefined) updateData.all_day = all_day;
     if (calendar_id !== undefined) updateData.calendar_integration_id = calendar_id;
     
@@ -759,15 +978,98 @@ router.put('/appointments/:id', async (req, res) => {
 
     console.log(`✅ Appointment ${id} atualizado`);
 
-    // ✅ MODIFICADO: Informações sobre sincronização (considerando possível mudança de agenda)
+    // ✅ NOVO: Atualizar evento no Google Calendar se houver google_event_id
     let googleEventInfo = {
-      integration_status: 'sync_attempted',
+      integration_status: 'not_attempted',
       google_event_id: existingAppointment.google_event_id,
-      message: calendar_id ? 
-        `Agendamento movido para nova agenda. Sincronização será processada` :
-        `Sincronização de mudanças será processada`,
+      message: 'Sincronização com Google Calendar não configurada',
       calendar_changed: !!calendar_id
     };
+
+    if (existingAppointment.google_event_id && targetCalendarId) {
+      try {
+        // Buscar integração da agenda alvo (pode ter mudado)
+        const targetCalendarValidation = await validateCalendarId(targetCalendarId, company.id, req.supabase);
+        
+        if (targetCalendarValidation.valid && targetCalendarValidation.integration.access_token) {
+          console.log(`🔄 Atualizando evento no Google Calendar...`);
+          
+          // Se mudou de agenda, precisa deletar da agenda antiga e criar na nova
+          if (calendar_id && calendar_id !== existingAppointment.calendar_integration_id) {
+            // TODO: Implementar mudança entre agendas (deletar + criar)
+            googleEventInfo = {
+              integration_status: 'pending',
+              google_event_id: existingAppointment.google_event_id,
+              message: 'Mudança entre agendas será processada em background',
+              calendar_changed: true
+            };
+          } else {
+            // Atualizar evento na mesma agenda
+            const googleEventUpdates = {};
+            if (title !== undefined) googleEventUpdates.summary = title;
+            if (description !== undefined) googleEventUpdates.description = description;
+            if (location !== undefined) googleEventUpdates.location = location;
+            if (start_time !== undefined) {
+              googleEventUpdates.start = {
+                dateTime: start_time,
+                timeZone: targetCalendarValidation.integration.timezone || 'America/Sao_Paulo'
+              };
+            }
+            if (end_time !== undefined) {
+              googleEventUpdates.end = {
+                dateTime: end_time,
+                timeZone: targetCalendarValidation.integration.timezone || 'America/Sao_Paulo'
+              };
+            }
+            if (attendees !== undefined) {
+              googleEventUpdates.attendees = updateData.attendees.map(att => ({ email: att.email }));
+            }
+
+            // Fazer chamada para API do Google Calendar
+            const url = `https://www.googleapis.com/calendar/v3/calendars/${targetCalendarValidation.integration.calendar_id}/events/${existingAppointment.google_event_id}`;
+            
+            const response = await fetch(url, {
+              method: 'PATCH',
+              headers: {
+                'Authorization': `Bearer ${targetCalendarValidation.integration.access_token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(googleEventUpdates)
+            });
+
+            if (response.ok) {
+              const updatedGoogleEvent = await response.json();
+              googleEventInfo = {
+                integration_status: 'success',
+                google_event_id: updatedGoogleEvent.id,
+                message: 'Evento atualizado com sucesso no Google Calendar',
+                calendar_changed: false
+              };
+              console.log(`✅ Evento atualizado no Google Calendar: ${updatedGoogleEvent.id}`);
+            } else {
+              const errorText = await response.text();
+              console.error('❌ Erro ao atualizar evento no Google:', errorText);
+              googleEventInfo = {
+                integration_status: 'failed',
+                google_event_id: existingAppointment.google_event_id,
+                message: `Erro ao atualizar no Google Calendar: ${response.status}`,
+                calendar_changed: false
+              };
+            }
+          }
+        } else {
+          googleEventInfo.message = 'Integração sem token de acesso válido. Reconecte o Google Calendar';
+        }
+      } catch (googleError) {
+        console.error('❌ Erro ao atualizar evento no Google Calendar:', googleError);
+        googleEventInfo = {
+          integration_status: 'failed',
+          google_event_id: existingAppointment.google_event_id,
+          message: `Erro ao atualizar no Google Calendar: ${googleError.message}`,
+          calendar_changed: !!calendar_id
+        };
+      }
+    }
 
     return res.json({
       success: true,
@@ -842,17 +1144,71 @@ router.delete('/appointments/:id', async (req, res) => {
 
     console.log(`✅ Appointment ${id} deletado`);
 
-    // ✅ MODIFICADO: Informações sobre deleção
+    // ✅ NOVO: Deletar evento do Google Calendar se houver google_event_id
     let googleEventInfo = null;
-    if (existingAppointment.google_event_id) {
-      console.log('🔄 Tentando deletar evento do Google Calendar...');
-      
-      googleEventInfo = {
-        integration_status: 'deletion_attempted',
-        google_event_id: existingAppointment.google_event_id,
-        message: 'Deleção do evento no Google Calendar será processada',
-        calendar_integration_id: existingAppointment.calendar_integration_id
-      };
+    if (existingAppointment.google_event_id && existingAppointment.calendar_integration_id) {
+      try {
+        console.log('🔄 Deletando evento do Google Calendar...');
+        
+        // Buscar integração da agenda
+        const calendarValidation = await validateCalendarId(existingAppointment.calendar_integration_id, company.id, req.supabase);
+        
+        if (calendarValidation.valid && calendarValidation.integration.access_token) {
+          // Fazer chamada para API do Google Calendar
+          const url = `https://www.googleapis.com/calendar/v3/calendars/${calendarValidation.integration.calendar_id}/events/${existingAppointment.google_event_id}`;
+          
+          const response = await fetch(url, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${calendarValidation.integration.access_token}`,
+              'Content-Type': 'application/json',
+            }
+          });
+
+          if (response.ok) {
+            googleEventInfo = {
+              integration_status: 'success',
+              google_event_id: existingAppointment.google_event_id,
+              message: 'Evento deletado com sucesso do Google Calendar',
+              calendar_integration_id: existingAppointment.calendar_integration_id
+            };
+            console.log(`✅ Evento deletado do Google Calendar: ${existingAppointment.google_event_id}`);
+          } else if (response.status === 410) {
+            // Erro 410: Resource já foi deletado
+            googleEventInfo = {
+              integration_status: 'already_deleted',
+              google_event_id: existingAppointment.google_event_id,
+              message: 'Evento já havia sido deletado do Google Calendar',
+              calendar_integration_id: existingAppointment.calendar_integration_id
+            };
+            console.log('ℹ️ Evento já havia sido deletado no Google Calendar');
+          } else {
+            const errorText = await response.text();
+            console.error('❌ Erro ao deletar evento do Google:', errorText);
+            googleEventInfo = {
+              integration_status: 'failed',
+              google_event_id: existingAppointment.google_event_id,
+              message: `Erro ao deletar do Google Calendar: ${response.status}`,
+              calendar_integration_id: existingAppointment.calendar_integration_id
+            };
+          }
+        } else {
+          googleEventInfo = {
+            integration_status: 'skipped',
+            google_event_id: existingAppointment.google_event_id,
+            message: 'Integração sem token de acesso válido. Evento não foi deletado do Google Calendar',
+            calendar_integration_id: existingAppointment.calendar_integration_id
+          };
+        }
+      } catch (googleError) {
+        console.error('❌ Erro ao deletar evento do Google Calendar:', googleError);
+        googleEventInfo = {
+          integration_status: 'failed',
+          google_event_id: existingAppointment.google_event_id,
+          message: `Erro ao deletar do Google Calendar: ${googleError.message}`,
+          calendar_integration_id: existingAppointment.calendar_integration_id
+        };
+      }
     }
 
     return res.json({
@@ -1008,4 +1364,72 @@ router.get('/integrations/status', async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;
+
+// ==================== EXEMPLO DE USO ====================
+/*
+🔥 INTEGRAÇÃO COMPLETA GOOGLE CALENDAR + API 🔥
+
+✅ AGORA quando um usuário agenda via API, o evento É CRIADO AUTOMATICAMENTE no Google Calendar!
+
+📋 COMO USAR:
+
+1. PRIMEIRO - Obter lista de agendas:
+   GET /api/calendar/integrations
+   
+   Response:
+   {
+     "success": true,
+     "data": {
+       "integrations": [
+         {
+           "id": "550e8400-e29b-41d4-a716-446655440001",
+           "calendar_name": "Agenda Principal",
+           "status": "connected",
+           "is_active": true
+         }
+       ]
+     }
+   }
+
+2. AGENDAR (cria automaticamente no Google Calendar):
+   POST /api/calendar/schedule
+   {
+     "title": "Reunião com Cliente",
+     "description": "Apresentação da proposta",
+     "start_time": "2024-01-15T10:00:00Z",
+     "end_time": "2024-01-15T11:00:00Z",
+     "calendar_id": "550e8400-e29b-41d4-a716-446655440001",
+     "create_google_meet": true,
+     "attendees": ["cliente@empresa.com"]
+   }
+   
+   Response:
+   {
+     "success": true,
+     "appointment": {
+       "id": "apt_123",
+       "google_event_id": "google_event_456",
+       "google_meet_link": "https://meet.google.com/abc-defg-hij"
+     },
+     "google_calendar": {
+       "integration_status": "success",
+       "message": "Evento criado com sucesso no Google Calendar"
+     }
+   }
+
+🔄 TOKENS REFRESH AUTOMÁTICO:
+- Se o access_token estiver vencendo, a API renova automaticamente usando refresh_token
+- Salva novos tokens no banco para próximas chamadas
+
+🎯 VALIDAÇÕES:
+- calendar_id deve pertencer à empresa
+- Integração deve estar ativa (status: connected)
+- Access token deve estar válido (ou renovável)
+- Conflitos de horário são verificados
+
+🛠️ TROUBLESHOOTING:
+- Se falhar: verifique se Google Calendar está conectado
+- Reconecte via frontend se necessário
+- Logs detalhados no console para debug
+*/ 
