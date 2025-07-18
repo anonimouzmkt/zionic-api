@@ -192,141 +192,6 @@ async function getCompanyTimezone(companyId, supabase) {
   }
 }
 
-/**
- * Busca eventos diretamente do Google Calendar API (baseado em googleCalendarService.ts)
- */
-async function fetchGoogleCalendarEvents(integration, startTime, endTime) {
-  const logPrefix = '[Google Calendar API]';
-  console.log(`${logPrefix} Buscando eventos direto da API...`);
-  
-  try {
-    // Garantir token válido (renovar se necessário)
-    const accessToken = await ensureValidToken(integration);
-    
-    // Parâmetros para buscar eventos do Google Calendar
-    const params = new URLSearchParams({
-      timeMin: startTime,
-      timeMax: endTime,
-      singleEvents: 'true',
-      orderBy: 'startTime',
-      maxResults: '250'
-    });
-    
-    const url = `https://www.googleapis.com/calendar/v3/calendars/${integration.calendar_id}/events?${params}`;
-    
-    console.log(`${logPrefix} Request URL: GET ${url}`);
-    
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 10000 // 10 segundos timeout
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`${logPrefix} Erro HTTP ${response.status}: ${errorText}`);
-      throw new Error(`Google Calendar API error: ${response.status} - ${errorText}`);
-    }
-    
-    const data = await response.json();
-    console.log(`${logPrefix} Eventos encontrados: ${data.items?.length || 0}`);
-    
-    // Processar eventos para formato padronizado
-    const events = (data.items || []).map(event => ({
-      id: event.id,
-      title: event.summary || 'Evento sem título',
-      description: event.description || '',
-      start_time: event.start.dateTime || event.start.date,
-      end_time: event.end.dateTime || event.end.date,
-      location: event.location || '',
-      status: event.status === 'cancelled' ? 'cancelled' : 'confirmed',
-      source: 'google_calendar',
-      created_outside_api: true,
-      google_event_id: event.id,
-      google_calendar_id: integration.calendar_id,
-      google_meet_link: event.conferenceData?.entryPoints?.[0]?.uri || '',
-      attendees: (event.attendees || []).map(att => ({
-        email: att.email,
-        displayName: att.displayName,
-        responseStatus: att.responseStatus
-      })),
-      all_day: !!event.start.date // Se tem 'date' ao invés de 'dateTime', é all-day
-    }));
-    
-    return events;
-    
-  } catch (error) {
-    console.error(`${logPrefix} Erro ao buscar eventos:`, error.message);
-    throw error;
-  }
-}
-
-/**
- * Verifica se token está válido ou renova se necessário (baseado em googleCalendarService.ts)
- */
-async function ensureValidToken(integration) {
-  if (!integration.access_token) {
-    throw new Error('No access token available');
-  }
-  
-  // Verificar se token está próximo do vencimento (5 minutos antes)
-  const expiresAt = new Date(integration.token_expires_at);
-  const fiveMinutesFromNow = new Date(Date.now() + 5 * 60 * 1000);
-  
-  if (expiresAt <= fiveMinutesFromNow) {
-    console.log('🔄 Token expiring soon, refreshing...');
-    
-    if (!integration.refresh_token) {
-      throw new Error('No refresh token available');
-    }
-    
-    const newTokens = await refreshAccessToken(integration);
-    
-    // Atualizar tokens no banco
-    await supabase
-      .from('google_calendar_integrations')
-      .update({
-        access_token: newTokens.access_token,
-        refresh_token: newTokens.refresh_token || integration.refresh_token,
-        token_expires_at: new Date(Date.now() + newTokens.expires_in * 1000).toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', integration.id);
-    
-    return newTokens.access_token;
-  }
-  
-  return integration.access_token;
-}
-
-/**
- * Renova token de acesso usando refresh token
- */
-async function refreshAccessToken(integration) {
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: new URLSearchParams({
-      refresh_token: integration.refresh_token,
-      client_id: integration.client_id,
-      client_secret: integration.client_secret,
-      grant_type: 'refresh_token'
-    })
-  });
-  
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(`Token refresh failed: ${errorData.error_description || errorData.error}`);
-  }
-  
-  return await response.json();
-}
-
 // ✅ HELPER NOVO: Converter "primary" para email real se necessário
 async function resolveGoogleCalendarId(calendarId, companyId, supabase) {
   if (calendarId !== 'primary') {
@@ -510,7 +375,7 @@ router.get('/availability', async (req, res) => {
     const startDateTime = start_time;
     const endDateTime = end_time;
 
-    console.log(`🔍 Verificando disponibilidade de ${startDateTime} até ${endDateTime} na agenda ${calendarValidation.integration.calendar_name || 'N/A'}`);
+    console.log(`🔍 Verificando disponibilidade de ${startDateTime} até ${endDateTime} na agenda ${calendarValidation.integration.calendar_name}`);
 
     // ✅ CORREÇÃO: Se calendar_id for "primary", buscar pelo email real dos appointments
     const googleCalendarIdToSearch = await resolveGoogleCalendarId(
@@ -519,11 +384,10 @@ router.get('/availability', async (req, res) => {
       req.supabase
     );
 
-    // ✅ ETAPA 1: Buscar appointments locais (banco de dados)
-    console.log(`📊 Buscando appointments locais na agenda: ${googleCalendarIdToSearch}`);
-    const { data: localAppointments, error } = await req.supabase
+    // ✅ CORRIGIDO: Buscar appointments da agenda específica usando google_calendar_id real
+    const { data: appointments, error } = await req.supabase
       .from('appointments')
-      .select('id, title, start_time, end_time, status, google_calendar_id, google_event_id')
+      .select('id, title, start_time, end_time, status, google_calendar_id')
       .eq('company_id', company.id)
       .eq('google_calendar_id', googleCalendarIdToSearch)
       .gte('start_time', startDateTime)
@@ -532,110 +396,30 @@ router.get('/availability', async (req, res) => {
       .order('start_time', { ascending: true });
 
     if (error) {
-      console.error('❌ Erro ao buscar appointments locais:', error);
+      console.error('❌ Erro ao buscar appointments:', error);
       return res.status(500).json({
         error: 'Erro interno do servidor',
         details: error.message
       });
     }
 
-    console.log(`✅ Appointments locais encontrados: ${localAppointments?.length || 0}`);
-
-    // ✅ ETAPA 2: Buscar eventos do Google Calendar em tempo real (BUSCA HÍBRIDA)
-    let googleCalendarEvents = [];
-    let googleCalendarWarning = null;
-    let googleCalendarSuccess = false;
-
-    if (calendarValidation.integration.access_token) {
-      try {
-        console.log(`🌐 Iniciando busca híbrida no Google Calendar...`);
-        googleCalendarEvents = await fetchGoogleCalendarEvents(
-          calendarValidation.integration,
-          startDateTime,
-          endDateTime
-        );
-        googleCalendarSuccess = true;
-        console.log(`✅ Google Calendar: ${googleCalendarEvents.length} eventos encontrados`);
-      } catch (googleError) {
-        googleCalendarWarning = `Aviso: Não foi possível consultar Google Calendar em tempo real (${googleError.message}). Mostrando apenas eventos locais.`;
-        console.warn('⚠️', googleCalendarWarning);
-      }
-    } else {
-      googleCalendarWarning = 'Aviso: Agenda sem token de acesso válido. Mostrando apenas eventos locais. Reconecte o Google Calendar.';
-      console.warn('⚠️', googleCalendarWarning);
-    }
-
-    // ✅ ETAPA 3: Combinar resultados (Local + Google Calendar)
-    const busySlotsLocal = localAppointments.map(apt => ({
+    // Calcular horários ocupados
+    const busySlots = appointments.map(apt => ({
       id: apt.id,
       title: apt.title,
       start: apt.start_time,
       end: apt.end_time,
-      status: apt.status,
-      source: 'local',
-      google_event_id: apt.google_event_id
+      status: apt.status
     }));
 
-    // Processar eventos do Google Calendar (apenas os que não estão no banco local)
-    const busySlotsGoogle = [];
-    if (googleCalendarSuccess && googleCalendarEvents.length > 0) {
-      const localGoogleEventIds = new Set(localAppointments
-        .filter(apt => apt.google_event_id)
-        .map(apt => apt.google_event_id)
-      );
-
-      googleCalendarEvents.forEach(event => {
-        // Pular eventos que já estão no banco local
-        if (localGoogleEventIds.has(event.google_event_id)) {
-          return;
-        }
-
-        // Pular eventos cancelados
-        if (event.status === 'cancelled') {
-          return;
-        }
-
-        busySlotsGoogle.push({
-          id: event.id,
-          title: event.title,
-          start: event.start_time,
-          end: event.end_time,
-          status: 'external',
-          source: 'google_calendar',
-          google_event_id: event.google_event_id,
-          description: event.description || null,
-          created_outside_api: event.created_outside_api,
-          location: event.location || null,
-          google_meet_link: event.google_meet_link || null
-        });
-      });
-    }
-
-    // Combinar todos os busy slots
-    const allBusySlots = [...busySlotsLocal, ...busySlotsGoogle];
-    
-    // Ordenar por horário de início
-    allBusySlots.sort((a, b) => new Date(a.start) - new Date(b.start));
-
-    // Determinar se o período está livre
-    const isFree = allBusySlots.length === 0;
-
-    // ✅ ETAPA 4: Log dos resultados da busca híbrida
-    console.log(`📊 Resultados da busca híbrida:`);
-    console.log(`   - Eventos locais: ${busySlotsLocal.length}`);
-    console.log(`   - Eventos Google Calendar: ${busySlotsGoogle.length}`);
-    console.log(`   - Total de conflitos: ${allBusySlots.length}`);
-    console.log(`   - Período ${isFree ? 'LIVRE' : 'OCUPADO'}`);
-    
-    if (googleCalendarWarning) {
-      console.log(`   - Aviso: ${googleCalendarWarning}`);
-    }
+    // Determinar se o dia está livre
+    const isFree = busySlots.length === 0;
 
     return res.json({
       success: true,
       is_free: isFree,
-      total_appointments: allBusySlots.length,
-      busy_slots: allBusySlots,
+      total_appointments: busySlots.length,
+      busy_slots: busySlots,
       availability_window: {
         start_time: startDateTime,
         end_time: endDateTime
@@ -644,14 +428,6 @@ router.get('/availability', async (req, res) => {
         id: calendarValidation.integration.id,
         name: calendarValidation.integration.calendar_name,
         calendar_id: calendarValidation.integration.calendar_id
-      },
-      // ✅ NOVO: Informações sobre busca híbrida
-      hybrid_search: {
-        local_events: busySlotsLocal.length,
-        google_calendar_events: busySlotsGoogle.length,
-        google_calendar_success: googleCalendarSuccess,
-        total_unique_events: allBusySlots.length,
-        warning: googleCalendarWarning
       },
       timezone: companyTimezone,
       company: {
@@ -1804,66 +1580,18 @@ module.exports = router;
      }
    }
 
-2. VERIFICAR DISPONIBILIDADE (busca híbrida + formato ISO):
+2. VERIFICAR DISPONIBILIDADE (novo formato ISO):
    GET /api/calendar/availability?calendar_id=550e8400-e29b-41d4-a716-446655440001&start_time=2025-07-07T09:00:00&end_time=2025-07-07T18:00:00
    
-   Response (sucesso total):
+   Response:
    {
      "success": true,
      "is_free": false,
-     "total_appointments": 3,
-     "busy_slots": [
-       {
-         "id": "apt_123",
-         "title": "Reunião via API",
-         "start": "2025-07-07T10:00:00Z",
-         "end": "2025-07-07T11:00:00Z",
-         "status": "scheduled",
-         "source": "local"
-       },
-       {
-         "id": "google_event_456",
-         "title": "Evento Externo",
-         "start": "2025-07-07T14:00:00Z",
-         "end": "2025-07-07T15:00:00Z",
-         "status": "external",
-         "source": "google_calendar",
-         "created_outside_api": true
-       }
-     ],
+     "total_appointments": 2,
+     "busy_slots": [...],
      "availability_window": {
        "start_time": "2025-07-07T09:00:00",
        "end_time": "2025-07-07T18:00:00"
-     },
-     "hybrid_search": {
-       "local_events": 1,
-       "google_calendar_events": 1,
-       "google_calendar_success": true,
-       "warning": null
-     },
-     "timezone": "America/Sao_Paulo"
-   }
-   
-   Response (erro Google Calendar):
-   {
-     "success": true,
-     "is_free": false,
-     "total_appointments": 1,
-     "busy_slots": [
-       {
-         "id": "apt_123",
-         "title": "Reunião via API",
-         "start": "2025-07-07T10:00:00Z",
-         "end": "2025-07-07T11:00:00Z",
-         "status": "scheduled",
-         "source": "local"
-       }
-     ],
-     "hybrid_search": {
-       "local_events": 1,
-       "google_calendar_events": 0,
-       "google_calendar_success": false,
-       "warning": "Aviso: Não foi possível consultar Google Calendar em tempo real (Token expired). Mostrando apenas eventos locais."
      },
      "timezone": "America/Sao_Paulo"
    }
@@ -1904,13 +1632,6 @@ module.exports = router;
 - PREFERIDO: ISO 8601 → "2025-07-07T11:30:00" ou "2025-07-07T11:30:00Z"
 - LEGACY: Apenas data → "2025-07-07" (busca dia inteiro)
 
-🌐 BUSCA HÍBRIDA (Real-time):
-- LOCAL: Appointments criados via API (banco de dados)
-- GOOGLE CALENDAR: Eventos externos em tempo real
-- COMBINAÇÃO: Ambas as fontes são unificadas e deduplicadas
-- FALLBACK: Se Google falhar, retorna só dados locais + aviso
-- PERFORMANCE: Cache de tokens + renovação automática
-
 🌍 TIMEZONE:
 - Busca automaticamente de users.timezone da empresa
 - Fallback: company_settings.timezone
@@ -1928,21 +1649,8 @@ module.exports = router;
 - Formato ISO 8601 validado
 
 🛠️ TROUBLESHOOTING:
-- **Google Calendar não responde**: Busca híbrida retorna dados locais + aviso
-- **Token expirado**: Renovação automática ou erro com fallback
-- **Eventos duplicados**: Sistema deduplica automaticamente por google_event_id  
-- **Agenda "primary"**: Resolve automaticamente para email real
-- **Performance lenta**: Google Calendar timeout não bloqueia resposta local
-- **Logs detalhados**: Console mostra status de cada etapa da busca híbrida
-- **Reconexão necessária**: Se avisos persistem, reconecte Google Calendar via frontend
-
-📋 LOGS DE BUSCA HÍBRIDA:
-🔍 "Verificando disponibilidade..." → Início da verificação
-📊 "Buscando appointments locais..." → Consultando banco de dados
-✅ "Appointments locais encontrados: X" → Resultado local
-🌐 "Iniciando busca híbrida no Google Calendar..." → Consultando Google
-🔄 "Token expiring soon, refreshing..." → Renovando token automaticamente
-✅ "Google Calendar: X eventos encontrados" → Resultado Google
-⚠️ "Aviso: Não foi possível consultar Google Calendar..." → Fallback ativado
-✅ "Tokens renovados salvos durante availability check" → Token atualizado
+- Se falhar: verifique se Google Calendar está conectado
+- Reconecte via frontend se necessário
+- Logs detalhados no console para debug
+- Use formato ISO 8601 para melhor compatibilidade
 */ 
